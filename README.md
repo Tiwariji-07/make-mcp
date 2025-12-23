@@ -1,36 +1,116 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# MakeMCP
 
-## Getting Started
+<div align="center">
 
-First, run the development server:
+**Bridge APIs to LLM Context**
+
+Transform OpenAPI specs and Postman Collections into type-safe Model Context Protocol (MCP) servers. Enable LLMs to interact with your APIs instantly.
+
+[![Next.js](https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js)](https://nextjs.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+[![Tailwind CSS](https://img.shields.io/badge/Tailwind-4.0-38B2AC?style=flat-square&logo=tailwind-css)](https://tailwindcss.com/)
+
+</div>
+
+---
+
+## ✨ Features
+
+- **Import OpenAPI/Swagger** — Upload files, paste content, or fetch from URL
+- **Visual Endpoint Selection** — Choose which endpoints to expose as MCP tools
+- **Tool Configuration** — Edit tool names, descriptions, and parameter details
+- **Multi-Language Export** — Generate Node.js (TypeScript) or Python (FastMCP) servers
+- **Ready-to-Run Code** — Download a complete, deployable MCP server as a zip file
+
+## 🚀 Quick Start
 
 ```bash
+# Clone the repository
+git clone https://github.com/Tiwariji-07/make-mcp.git
+cd make-mcp
+
+# Install dependencies
+npm install
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) in your browser.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 📖 How It Works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. **Import** — Upload your OpenAPI/Swagger spec (JSON/YAML) or enter a URL
+2. **Select** — Choose which endpoints to convert into MCP tools
+3. **Configure** — Edit tool names, descriptions, and parameters for better LLM understanding
+4. **Export** — Download a complete MCP server in Node.js or Python
 
-## Learn More
+## 🛠️ Tech Stack
 
-To learn more about Next.js, take a look at the following resources:
+| Technology | Purpose |
+|------------|---------|
+| [Next.js 16](https://nextjs.org/) | React framework with App Router |
+| [Tailwind CSS v4](https://tailwindcss.com/) | Styling with custom glassmorphic theme |
+| [shadcn/ui](https://ui.shadcn.com/) | UI components |
+| [Zustand](https://zustand-demo.pmnd.rs/) | State management |
+| [swagger-parser](https://apitools.dev/swagger-parser/) | OpenAPI specification parsing |
+| [Handlebars](https://handlebarsjs.com/) | Code template generation |
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 📂 Project Structure
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```
+make-mcp/
+├── src/
+│   ├── app/
+│   │   ├── page.tsx              # Landing page (Hero)
+│   │   ├── import/page.tsx       # Import Collection page
+│   │   ├── editor/page.tsx       # Endpoint selection + sidebar
+│   │   ├── export/page.tsx       # Server configuration
+│   │   └── api/generate/route.ts # Code generation API
+│   ├── components/
+│   │   ├── shared/               # Header, common components
+│   │   └── ui/                   # shadcn/ui components
+│   ├── lib/parsers/              # OpenAPI parser
+│   └── store/                    # Zustand store
+├── public/
+└── package.json
+```
 
-## Deploy on Vercel
+## 🎯 Generated Server Features
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The generated MCP servers include:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- **Full MCP SDK integration** — Uses official `@modelcontextprotocol/sdk` (Node) or `fastmcp` (Python)
+- **Type-safe parameters** — Zod schemas (Node) or Python type hints
+- **Transport options** — stdio, SSE, or HTTP (Streamable)
+- **Authentication support** — API Key, Bearer Token, or Basic Auth
+- **Environment config** — `.env.example` with all required variables
+- **Documentation** — README with setup and usage instructions
+
+## 🔧 Development
+
+```bash
+# Run development server
+npm run dev
+
+# Build for production
+npm run build
+
+# Start production server
+npm start
+
+# Type check
+npx tsc --noEmit
+```
+
+## 📄 License
+
+MIT © [Tiwariji-07](https://github.com/Tiwariji-07)
+
+---
+
+<div align="center">
+
+**[⭐ Star this repo](https://github.com/Tiwariji-07/make-mcp)** if you find it useful!
+
+</div>
