@@ -67,7 +67,6 @@ export default function HomePage() {
               <div className="flex bg-white/5 border border-white/10 rounded overflow-hidden">
                 <div className="px-2 py-1 border-r border-white/10 bg-white/5">TS</div>
                 <div className="px-2 py-1 border-r border-white/10">PY</div>
-                <div className="px-2 py-1">GO</div>
               </div>
               <span>Compatible with major languages</span>
             </div>

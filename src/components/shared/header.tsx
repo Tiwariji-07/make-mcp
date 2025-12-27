@@ -50,7 +50,7 @@ export function Header() {
                 {/* GitHub Link */}
                 <Button variant="ghost" size="icon" asChild>
                     <a
-                        href="https://github.com"
+                        href="https://github.com/Tiwariji-07/make-mcp"
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-muted-foreground hover:text-foreground"
