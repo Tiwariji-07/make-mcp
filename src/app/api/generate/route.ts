@@ -138,15 +138,24 @@ function generateNodeProject(req: GenerateRequest): Map<string, string> {
     const toolsData = tools.map((tool) => {
         const { method, path } = parseEndpointId(tool.endpointId);
         const isPathParam = (name: string) => path.includes(`{${name}}`);
+        const isBodyMethod = ["POST", "PUT", "PATCH"].includes(method);
         const pathParams = tool.parameters.filter(p => isPathParam(p.name));
-        const queryParams = tool.parameters.filter(p => !isPathParam(p.name) && !["POST", "PUT", "PATCH"].includes(method));
-        const bodyParams = tool.parameters.filter(p => !isPathParam(p.name) && ["POST", "PUT", "PATCH"].includes(method));
+        const queryParams = tool.parameters.filter(p => !isPathParam(p.name) && !isBodyMethod);
+        const bodyParams = tool.parameters.filter(p => !isPathParam(p.name) && isBodyMethod);
+
+        // Check if single body param (pass directly) vs multiple (create object)
+        const hasSingleBodyParam = bodyParams.length === 1;
+        const singleBodyParamName = hasSingleBodyParam ? bodyParams[0].name : null;
 
         return {
             ...tool,
             method,
             path,
             hasQueryParams: queryParams.length > 0,
+            hasBodyParams: bodyParams.length > 0,
+            hasSingleBodyParam,
+            singleBodyParamName,
+            bodyParams: bodyParams.map(p => ({ name: p.name })),
             zodParams: tool.parameters.map((p) => ({
                 name: p.name,
                 zodType: toZodType(p.type),
@@ -154,6 +163,7 @@ function generateNodeProject(req: GenerateRequest): Map<string, string> {
                 description: p.description,
                 isPathParam: isPathParam(p.name),
                 isQueryParam: queryParams.some(q => q.name === p.name),
+                isBodyParam: bodyParams.some(b => b.name === p.name),
             })),
         };
     });
@@ -241,7 +251,13 @@ server.tool(
         method: "{{method}}",
         headers: getHeaders(),
 {{#if (isBodyMethod method)}}
-        body: JSON.stringify(args),
+{{#if hasSingleBodyParam}}
+        body: JSON.stringify(args.{{singleBodyParamName}}),
+{{else}}
+{{#if hasBodyParams}}
+        body: JSON.stringify({ {{#each bodyParams}}{{name}}: args.{{name}}{{#unless @last}}, {{/unless}}{{/each}} }),
+{{/if}}
+{{/if}}
 {{/if}}
       });
       
@@ -423,12 +439,18 @@ build-backend = "hatchling.build"
         const queryParams = allParams.filter(p => p.isQueryParam);
         const bodyParams = allParams.filter(p => p.isBodyParam);
 
+        // Check if there's exactly one body param (pass it directly as json=body)
+        // Multiple body params means we need to create a dict
+        const singleBodyParam = bodyParams.length === 1 ? bodyParams[0] : null;
+
         return {
             ...tool,
             method,
             path,
             hasQueryParams: queryParams.length > 0,
             hasBodyParams: bodyParams.length > 0,
+            hasSingleBodyParam: singleBodyParam !== null,
+            singleBodyParamName: singleBodyParam?.name,
             pythonParams: sortedParams,
             queryParams,
             bodyParams,
@@ -510,11 +532,15 @@ def {{toolName}}({{#each pythonParams}}{{name}}: {{pythonType}}{{#unless require
         params=params,
 {{/if}}
 {{#if hasBodyParams}}
+{{#if hasSingleBodyParam}}
+        json={{singleBodyParamName}},
+{{else}}
         json={
 {{#each bodyParams}}
             "{{name}}": {{name}},
 {{/each}}
         },
+{{/if}}
 {{/if}}
     )
     return response.json()

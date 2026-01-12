@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Sparkles, Code2, FileJson } from "lucide-react";
+import { ArrowRight, Sparkles, Code2, FileJson, Loader2 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { useProjectStore } from "@/store/project-store";
@@ -10,6 +10,7 @@ import { useProjectStore } from "@/store/project-store";
 export default function HomePage() {
   const router = useRouter();
   const { spec } = useProjectStore();
+  const [isNavigating, setIsNavigating] = useState(false);
 
   // Navigate to editor when spec is already loaded
   useEffect(() => {
@@ -17,6 +18,11 @@ export default function HomePage() {
       router.push("/editor");
     }
   }, [spec, router]);
+
+  const handleImportClick = () => {
+    setIsNavigating(true);
+    router.push("/import");
+  };
 
   return (
     <div className="min-h-screen">
@@ -49,10 +55,20 @@ export default function HomePage() {
               <Button
                 size="lg"
                 className="bg-primary hover:bg-primary/90 px-8 py-6 text-lg"
-                onClick={() => router.push("/import")}
+                onClick={handleImportClick}
+                disabled={isNavigating}
               >
-                Import API
-                <ArrowRight className="w-5 h-5 ml-2" />
+                {isNavigating ? (
+                  <>
+                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                    Loading...
+                  </>
+                ) : (
+                  <>
+                    Import API
+                    <ArrowRight className="w-5 h-5 ml-2" />
+                  </>
+                )}
               </Button>
               <Button
                 size="lg"

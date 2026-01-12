@@ -199,7 +199,7 @@ const initialState = {
         name: "my-mcp-server",
         version: "1.0.0",
         host: "localhost",
-        port: 3000,
+        port: 8080,
         transport: "stdio" as const,
     },
     exportConfig: {

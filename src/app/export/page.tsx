@@ -47,6 +47,7 @@ export default function ExportPage() {
 
     const [isGenerating, setIsGenerating] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [portValue, setPortValue] = useState(serverConfig.port.toString());
 
     // Redirect if no spec loaded
     useEffect(() => {
@@ -55,9 +56,27 @@ export default function ExportPage() {
         }
     }, [spec, router]);
 
+    // Sync port value to store when it's a valid number
+    useEffect(() => {
+        const num = parseInt(portValue);
+        if (!isNaN(num) && num > 0 && num <= 65535) {
+            setServerConfig({ port: num });
+        }
+    }, [portValue, setServerConfig]);
+
     if (!spec) return null;
 
     const selectedTools = tools.filter((t) => t.enabled);
+
+    // Validation: check if all required fields are filled
+    const isFormValid =
+        serverConfig.name.trim() !== "" &&
+        serverConfig.version.trim() !== "" &&
+        serverConfig.host.trim() !== "" &&
+        portValue.trim() !== "" &&
+        !isNaN(parseInt(portValue)) &&
+        parseInt(portValue) > 0 &&
+        selectedTools.length > 0;
 
     const handleGenerate = async () => {
         setIsGenerating(true);
@@ -267,10 +286,14 @@ export default function ExportPage() {
                                 <div className="space-y-2">
                                     <Label className="text-xs uppercase text-muted-foreground font-semibold tracking-wider">Port</Label>
                                     <Input
-                                        value={serverConfig.port}
-                                        onChange={(e) => setServerConfig({ port: parseInt(e.target.value) || 3000 })}
+                                        value={portValue}
+                                        onChange={(e) => setPortValue(e.target.value)}
                                         className="bg-white/5 border-white/10 font-mono"
+                                        placeholder="8080"
                                     />
+                                    {portValue && (isNaN(parseInt(portValue)) || parseInt(portValue) <= 0 || parseInt(portValue) > 65535) && (
+                                        <p className="text-xs text-red-400">Invalid port number</p>
+                                    )}
                                 </div>
 
                                 <div className="space-y-2 md:col-span-2">
@@ -398,7 +421,7 @@ export default function ExportPage() {
                                 <div className="mt-8 space-y-3">
                                     <Button
                                         onClick={handleGenerate}
-                                        disabled={isGenerating || selectedTools.length === 0}
+                                        disabled={isGenerating || !isFormValid}
                                         className="w-full bg-primary hover:bg-primary/90 py-6"
                                     >
                                         {isGenerating ? (
@@ -413,6 +436,13 @@ export default function ExportPage() {
                                             </>
                                         )}
                                     </Button>
+                                    {!isFormValid && !isGenerating && (
+                                        <p className="text-xs text-center text-muted-foreground">
+                                            {selectedTools.length === 0
+                                                ? "Select at least one endpoint"
+                                                : "Fill in all required fields"}
+                                        </p>
+                                    )}
 
                                     <Button
                                         variant="outline"

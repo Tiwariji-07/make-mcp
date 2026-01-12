@@ -8,7 +8,8 @@ import {
     ArrowRight,
     FileJson,
     Clock,
-    ChevronRight
+    ChevronRight,
+    Loader2
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ export default function ImportPage() {
 
     const [specUrl, setSpecUrl] = useState("");
     const [isUrlFetching, setIsUrlFetching] = useState(false);
+    const [isFileParsing, setIsFileParsing] = useState(false);
 
     // Navigate to editor when spec is loaded
     useEffect(() => {
@@ -38,6 +40,7 @@ export default function ImportPage() {
         if (acceptedFiles.length === 0) return;
 
         const file = acceptedFiles[0];
+        setIsFileParsing(true);
         setLoading(true);
         setError(null);
 
@@ -49,6 +52,7 @@ export default function ImportPage() {
             setError(err instanceof Error ? err.message : "Failed to parse file");
         } finally {
             setLoading(false);
+            setIsFileParsing(false);
         }
     };
 
@@ -85,9 +89,28 @@ export default function ImportPage() {
         { name: "Auth Service", type: "OPENAPI", time: "3d ago" },
     ];
 
+    const isProcessing = isFileParsing || isUrlFetching;
+
     return (
-        <div className="min-h-screen">
+        <div className="min-h-screen relative">
             <Header />
+
+            {/* Loading Overlay */}
+            {isProcessing && (
+                <div className="fixed inset-0 bg-background/80 backdrop-blur-sm z-50 flex items-center justify-center">
+                    <div className="glass p-8 flex flex-col items-center gap-4">
+                        <Loader2 className="w-10 h-10 text-primary animate-spin" />
+                        <div className="text-center">
+                            <p className="font-semibold text-lg">
+                                {isUrlFetching ? "Fetching Spec..." : "Parsing File..."}
+                            </p>
+                            <p className="text-sm text-muted-foreground">
+                                Analyzing endpoints and schemas
+                            </p>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             <main className="pt-24 pb-20 px-6">
                 <div className="max-w-5xl mx-auto">

@@ -75,7 +75,7 @@ export default function EditorPage() {
         : null;
 
     return (
-        <div className="min-h-screen">
+        <div className="min-h-screen overflow-x-hidden">
             <Header />
 
             <main className="pt-24 pb-20 px-6">
@@ -258,7 +258,7 @@ function EndpointItem({
                 </div>
 
                 {(endpoint.summary || endpoint.description) && (
-                    <p className="text-sm text-muted-foreground truncate">
+                    <p className="text-sm text-muted-foreground line-clamp-2">
                         {endpoint.summary || endpoint.description}
                     </p>
                 )}
