@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown, ChevronRight } from "lucide-react";
+import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { useProjectStore, ParsedEndpoint, ToolConfig } from "@/store/project-store";
+import { useProjectStore, ParsedEndpoint } from "@/store/project-store";
 
 export default function EditorPage() {
   const router = useRouter();

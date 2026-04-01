@@ -7,11 +7,10 @@ import {
   Loader2,
   Check,
   Terminal,
-  FileJson,
   Code2,
   Eye,
-  Shield,
   ArrowLeft,
+  Layers3,
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
@@ -35,7 +34,33 @@ interface PreviewFile {
   content: string;
 }
 
+interface PreviewCheck {
+  name: string;
+  status: "passed" | "failed" | "skipped";
+  details?: string;
+}
+
+interface PreviewData {
+  files: PreviewFile[];
+  manifest?: {
+    generatorVersion: string;
+    toolCount: number;
+    features: Record<string, boolean>;
+  };
+  verification?: {
+    status: "passed" | "failed";
+    checks: PreviewCheck[];
+  };
+}
+
 type AuthType = AuthConfig["type"];
+
+const defaultExportFeatures = {
+  documentation: true,
+  docker: false,
+  tests: true,
+  verification: true,
+};
 
 function getDetectedAuthOptions(spec: ParsedSpec): AuthConfig[] {
   const options: AuthConfig[] = [];
@@ -77,6 +102,7 @@ export default function ExportPage() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [previewFiles, setPreviewFiles] = useState<PreviewFile[]>([]);
+  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [portValue, setPortValue] = useState(serverConfig.port.toString());
 
@@ -92,6 +118,7 @@ export default function ExportPage() {
   if (!spec) return null;
 
   const selectedTools = tools.filter((t) => t.enabled);
+  const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
   const detectedAuth = getDetectedAuthOptions(spec);
   const detectedApiKey = detectedAuth.find((o) => o.type === "apiKey");
   const port = parseInt(portValue, 10);
@@ -154,6 +181,7 @@ export default function ExportPage() {
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
       const data = await res.json();
       setPreviewFiles(data.files || []);
+      setPreviewData(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Preview failed");
     } finally {
@@ -248,6 +276,35 @@ export default function ExportPage() {
                       <SelectItem value="http">HTTP</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+              </Section>
+
+              <Section title="Output">
+                <div className="space-y-3">
+                  <FeatureToggle
+                    label="Documentation"
+                    description="Include README and usage notes"
+                    checked={exportFeatures.documentation}
+                    onCheckedChange={(checked) => setExportConfig({ features: { documentation: checked } })}
+                  />
+                  <FeatureToggle
+                    label="Docker"
+                    description="Add Dockerfile, compose, and ignore rules"
+                    checked={exportFeatures.docker}
+                    onCheckedChange={(checked) => setExportConfig({ features: { docker: checked } })}
+                  />
+                  <FeatureToggle
+                    label="Tests"
+                    description="Include generated smoke tests"
+                    checked={exportFeatures.tests}
+                    onCheckedChange={(checked) => setExportConfig({ features: { tests: checked } })}
+                  />
+                  <FeatureToggle
+                    label="Verification"
+                    description="Verify generated output before export"
+                    checked={exportFeatures.verification}
+                    onCheckedChange={(checked) => setExportConfig({ features: { verification: checked } })}
+                  />
                 </div>
               </Section>
 
@@ -347,6 +404,51 @@ export default function ExportPage() {
                   </div>
                 </div>
               ) : (
+                <div className="flex h-full flex-col">
+                  {previewData?.manifest && (
+                    <div className="border-b border-border px-6 py-4 text-[10px] tracking-wider uppercase text-muted-foreground space-y-3">
+                      <div className="flex items-center gap-2 text-foreground">
+                        <Layers3 className="w-3.5 h-3.5 text-primary" />
+                        <span>Generator v{previewData.manifest.generatorVersion}</span>
+                        <span className="text-primary/20">·</span>
+                        <span>{previewData.manifest.toolCount} tools</span>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(previewData.manifest.features).map(([feature, enabled]) => (
+                          <Badge
+                            key={feature}
+                            variant="outline"
+                            className={`text-[9px] border px-1.5 py-0 ${enabled ? "border-primary/40 text-primary" : "border-border text-muted-foreground"}`}
+                          >
+                            {feature}
+                          </Badge>
+                        ))}
+                      </div>
+                      {previewData.verification && (
+                        <div className="space-y-2">
+                          <div className={previewData.verification.status === "passed" ? "text-primary" : "text-red"}>
+                            Verification: {previewData.verification.status}
+                          </div>
+                          <div className="space-y-1">
+                            {previewData.verification.checks.map((check) => (
+                              <div key={check.name} className="flex items-center justify-between gap-4">
+                                <span>{check.name}</span>
+                                <span className={
+                                  check.status === "passed"
+                                    ? "text-primary"
+                                    : check.status === "failed"
+                                      ? "text-red"
+                                      : "text-muted-foreground"
+                                }>
+                                  {check.status}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 <Tabs defaultValue={previewFiles[0]?.name} className="flex flex-col h-full">
                   <TabsList className="flex-wrap h-auto gap-0 bg-background border-b border-border px-4 py-0 rounded-none">
                     {previewFiles.map((f) => (
@@ -372,6 +474,7 @@ export default function ExportPage() {
                     </TabsContent>
                   ))}
                 </Tabs>
+                </div>
               )}
             </div>
 
@@ -384,6 +487,8 @@ export default function ExportPage() {
               <span>{selectedTools.length} tools</span>
               <span className="text-primary/20">·</span>
               <span>{getAuthLabel(authConfig.type)}</span>
+              <span className="text-primary/20">·</span>
+              <span>{previewData?.manifest?.generatorVersion ? `v${previewData.manifest.generatorVersion}` : "preview"}</span>
             </div>
           </div>
         </div>
@@ -407,7 +512,11 @@ export default function ExportPage() {
 
               {!isFormValid && !isGenerating && (
                 <span className="text-[10px] text-muted-foreground tracking-wider uppercase">
-                  {selectedTools.length === 0 ? "No tools selected" : "Complete all fields"}
+                  {selectedTools.length === 0
+                    ? "No tools selected"
+                    : !isAuthValid
+                      ? "Authentication settings are incomplete"
+                      : "Complete all fields"}
                 </span>
               )}
 
@@ -515,5 +624,27 @@ function LangCard({
         {label}
       </div>
     </button>
+  );
+}
+
+function FeatureToggle({
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  description: string;
+  checked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-4 border border-border px-4 py-3">
+      <div className="space-y-1">
+        <p className="text-sm font-medium">{label}</p>
+        <p className="text-[11px] text-muted-foreground">{description}</p>
+      </div>
+      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
   );
 }

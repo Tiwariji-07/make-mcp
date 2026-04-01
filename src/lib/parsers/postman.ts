@@ -61,6 +61,10 @@ interface PostmanVariable {
 interface PostmanBody {
     mode: "raw" | "formdata" | "urlencoded" | "file" | "graphql";
     raw?: string;
+    formdata?: Array<{ key: string; value?: string; type?: string; description?: string; disabled?: boolean }>;
+    urlencoded?: Array<{ key: string; value?: string; description?: string; disabled?: boolean }>;
+    file?: { src?: string | string[] };
+    graphql?: { query?: string; variables?: string };
     options?: {
         raw?: {
             language?: string;
@@ -351,6 +355,16 @@ function parseUrl(url: PostmanUrl | string): {
 
 function parseBody(body: PostmanBody): ParsedEndpoint["requestBody"] {
     if (body.mode === "raw" && body.raw) {
+        const language = body.options?.raw?.language;
+
+        if (language === "text") {
+            return {
+                required: true,
+                contentType: "text/plain",
+                schema: { type: "string" },
+            };
+        }
+
         try {
             const parsed = JSON.parse(body.raw);
             const schema = inferSchema(parsed);
@@ -360,7 +374,6 @@ function parseBody(body: PostmanBody): ParsedEndpoint["requestBody"] {
                 schema,
             };
         } catch {
-            // Not valid JSON, treat as string
             return {
                 required: true,
                 contentType: "text/plain",
@@ -369,7 +382,69 @@ function parseBody(body: PostmanBody): ParsedEndpoint["requestBody"] {
         }
     }
 
-    // For other body modes, return generic schema
+    if (body.mode === "urlencoded") {
+        const properties: Record<string, unknown> = {};
+        const required: string[] = [];
+
+        for (const field of body.urlencoded || []) {
+            if (field.disabled) continue;
+            properties[field.key] = {
+                type: "string",
+                description: field.description,
+            };
+            required.push(field.key);
+        }
+
+        return {
+            required: required.length > 0,
+            contentType: "application/x-www-form-urlencoded",
+            schema: { type: "object", properties, required },
+        };
+    }
+
+    if (body.mode === "formdata") {
+        const properties: Record<string, unknown> = {};
+        const required: string[] = [];
+
+        for (const field of body.formdata || []) {
+            if (field.disabled) continue;
+            properties[field.key] = {
+                type: field.type === "file" ? "string" : "string",
+                description: field.description,
+            };
+            required.push(field.key);
+        }
+
+        return {
+            required: required.length > 0,
+            contentType: "multipart/form-data",
+            schema: { type: "object", properties, required },
+        };
+    }
+
+    if (body.mode === "file") {
+        return {
+            required: true,
+            contentType: "application/octet-stream",
+            schema: { type: "string" },
+        };
+    }
+
+    if (body.mode === "graphql") {
+        return {
+            required: true,
+            contentType: "application/json",
+            schema: {
+                type: "object",
+                properties: {
+                    query: { type: "string" },
+                    variables: { type: "string" },
+                },
+                required: ["query"],
+            },
+        };
+    }
+
     return {
         required: false,
         contentType: "application/json",

@@ -50,12 +50,13 @@ export interface ToolConfig {
         type: string;
         required: boolean;
         description: string;
-        location: "path" | "query" | "header" | "body";
+        location: "path" | "query" | "header" | "cookie" | "body";
         // For nested objects, store the full schema
         schema?: Record<string, unknown>;
     }[];
     // Full request body schema (resolved)
     bodySchema?: Record<string, unknown>;
+    bodyContentType?: string;
     // Example request body JSON
     bodyExample?: string;
 }
@@ -83,7 +84,19 @@ export interface ExportConfig {
     language: "node" | "python";
     framework: "mcp-ts-sdk" | "fastmcp";
     packageManager: "npm" | "pnpm" | "yarn";
+    features: {
+        documentation: boolean;
+        docker: boolean;
+        tests: boolean;
+        verification: boolean;
+    };
 }
+
+type ExportConfigUpdate = Partial<Omit<ExportConfig, "features">> & {
+    features?: Partial<ExportConfig["features"]>;
+};
+
+type PersistedProjectState = Partial<ProjectState>;
 
 // Saved project for history
 export interface SavedProject {
@@ -137,7 +150,7 @@ export interface ProjectState {
     // Config actions
     setAuthConfig: (config: AuthConfig) => void;
     setServerConfig: (config: Partial<ServerConfig>) => void;
-    setExportConfig: (config: Partial<ExportConfig>) => void;
+    setExportConfig: (config: ExportConfigUpdate) => void;
 
     // Project history actions
     saveCurrentProject: () => void;
@@ -326,12 +339,13 @@ function createToolConfig(endpoint: ParsedEndpoint): ToolConfig {
         type: p.type,
         required: p.required,
         description: p.description || "",
-        location: p.in as "path" | "query" | "header" | "body",
+        location: p.in as "path" | "query" | "header" | "cookie" | "body",
     }));
 
     // Request body parameters (for POST/PUT/PATCH)
     const bodyParams: ToolConfig["parameters"] = [];
     let bodySchema: Record<string, unknown> | undefined;
+    let bodyContentType: string | undefined;
     let bodyExample: string | undefined;
 
     if (endpoint.requestBody?.schema) {
@@ -344,6 +358,7 @@ function createToolConfig(endpoint: ParsedEndpoint): ToolConfig {
 
         // Store the full schema
         bodySchema = endpoint.requestBody.schema;
+        bodyContentType = endpoint.requestBody.contentType;
 
         // Generate example JSON
         const example = generateExampleFromSchema(endpoint.requestBody.schema);
@@ -400,6 +415,7 @@ function createToolConfig(endpoint: ParsedEndpoint): ToolConfig {
         description,
         parameters: [...urlParams, ...bodyParams],
         bodySchema,
+        bodyContentType,
         bodyExample,
     };
 }
@@ -423,11 +439,30 @@ const initialState = {
         language: "node" as const,
         framework: "mcp-ts-sdk" as const,
         packageManager: "npm" as const,
+        features: {
+            documentation: true,
+            docker: false,
+            tests: true,
+            verification: true,
+        },
     },
     savedProjects: [] as SavedProject[],
     isLoading: false,
     error: null,
 };
+
+function normalizeExportConfig(
+    exportConfig?: Partial<ExportConfig> | null
+): ExportConfig {
+    return {
+        ...initialState.exportConfig,
+        ...exportConfig,
+        features: {
+            ...initialState.exportConfig.features,
+            ...(exportConfig?.features || {}),
+        },
+    };
+}
 
 // Generate unique ID
 function generateId(): string {
@@ -490,7 +525,14 @@ export const useProjectStore = create<ProjectState>()(
             })),
 
             setExportConfig: (config) => set((state) => ({
-                exportConfig: { ...state.exportConfig, ...config },
+                exportConfig: {
+                    ...state.exportConfig,
+                    ...config,
+                    features: {
+                        ...state.exportConfig.features,
+                        ...config.features,
+                    },
+                },
             })),
 
             saveCurrentProject: () => {
@@ -542,7 +584,7 @@ export const useProjectStore = create<ProjectState>()(
                         tools: Array.isArray(tools) ? tools.map(sanitizeToolConfig) : [],
                         authConfig,
                         serverConfig,
-                        exportConfig,
+                        exportConfig: normalizeExportConfig(exportConfig),
                         currentStep: "editor",
                         error: null,
                     });
@@ -588,6 +630,18 @@ export const useProjectStore = create<ProjectState>()(
         {
             name: "makemcp-storage",
             storage: createJSONStorage(() => localStorage),
+            merge: (persistedState, currentState) => {
+                const persisted = (persistedState as PersistedProjectState | undefined) || {};
+
+                return {
+                    ...currentState,
+                    ...persisted,
+                    exportConfig: normalizeExportConfig(persisted.exportConfig),
+                    savedProjects: Array.isArray(persisted.savedProjects)
+                        ? persisted.savedProjects
+                        : currentState.savedProjects,
+                };
+            },
             partialize: (state) => ({
                 // Only persist these fields
                 savedProjects: state.savedProjects,

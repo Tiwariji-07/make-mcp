@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Upload,
@@ -11,7 +11,6 @@ import {
   ChevronRight,
   ChevronUp,
   Loader2,
-  Trash2,
   X,
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
@@ -35,7 +34,6 @@ export default function ImportPage() {
     error,
     savedProjects,
     loadProject,
-    deleteProject,
     clearSavedProjects,
   } = useProjectStore();
 
