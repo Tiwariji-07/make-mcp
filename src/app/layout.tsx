@@ -1,16 +1,13 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Fira_Code } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
+import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const firaCode = Fira_Code({
+  variable: "--font-fira",
   subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
+  display: "swap",
 });
 
 export const metadata: Metadata = {
@@ -80,11 +77,21 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Clash Display from Fontshare */}
+        <link
+          href="https://api.fontshare.com/v2/css?f[]=clash-display@400,500,600,700&display=swap"
+          rel="stylesheet"
+        />
+      </head>
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased bg-mesh min-h-screen`}
+        className={`${firaCode.variable} bg-mesh min-h-screen`}
+        style={{ fontFamily: "'Fira Code', monospace" }}
       >
-        {children}
+        <ThemeProvider defaultTheme="dark" storageKey="makemcp-theme">
+          {children}
+        </ThemeProvider>
         <Analytics />
       </body>
     </html>

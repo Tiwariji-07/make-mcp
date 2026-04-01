@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import Handlebars from "handlebars";
 import Archiver from "archiver";
-import { Readable } from "stream";
 
 // Types
 interface GenerateRequest {
@@ -26,7 +25,10 @@ interface ToolConfig {
         type: string;
         required: boolean;
         description: string;
+        location?: "path" | "query" | "header" | "body";
+        schema?: Record<string, unknown>;
     }[];
+    bodySchema?: Record<string, unknown>;
 }
 
 interface ServerConfig {
@@ -50,21 +52,100 @@ interface ExportConfig {
 
 // Parse endpoint ID to get method and path
 function parseEndpointId(id: string): { method: string; path: string } {
+    if (id.includes("::")) {
+        const [method, path] = id.split("::");
+        return { method, path };
+    }
+
+    const postmanMatch = id.match(/^(GET|POST|PUT|DELETE|PATCH)-(.+)-(\d+)$/);
+    if (postmanMatch) {
+        return {
+            method: postmanMatch[1],
+            path: postmanMatch[2],
+        };
+    }
+
     const [method, ...pathParts] = id.split("-");
     return { method, path: pathParts.join("-") };
 }
 
-// Convert type to Zod type
-function toZodType(type: string): string {
+// Convert type to Zod type - handles simple types and resolved schemas
+function toZodType(type: string, schema?: Record<string, unknown>): string {
+    // If we have a full schema, use it to generate proper Zod type
+    if (schema) {
+        return schemaToZodType(schema);
+    }
+
+    // Fallback for simple types
     const map: Record<string, string> = {
         string: "z.string()",
         integer: "z.number()",
         number: "z.number()",
         boolean: "z.boolean()",
         array: "z.array(z.unknown())",
-        object: "z.object({})",
+        object: "z.record(z.unknown())",
     };
     return map[type.toLowerCase()] || "z.string()";
+}
+
+// Generate proper Zod schema from OpenAPI schema (recursively resolves nested objects)
+function schemaToZodType(schema: Record<string, unknown>): string {
+    if (!schema) return "z.unknown()";
+
+    const type = schema.type as string;
+
+    // Handle enums
+    if (schema.enum && Array.isArray(schema.enum)) {
+        const enumVals = schema.enum.map(v => typeof v === "string" ? `"${v}"` : String(v)).join(", ");
+        return `z.enum([${enumVals}])`;
+    }
+
+    switch (type) {
+        case "string":
+            let strType = "z.string()";
+            if (schema.format === "email") strType = "z.string().email()";
+            if (schema.format === "uri" || schema.format === "url") strType = "z.string().url()";
+            if (schema.format === "uuid") strType = "z.string().uuid()";
+            if (schema.format === "date" || schema.format === "date-time") strType = "z.string()";
+            return strType;
+
+        case "integer":
+            return "z.number().int()";
+
+        case "number":
+            return "z.number()";
+
+        case "boolean":
+            return "z.boolean()";
+
+        case "array":
+            const items = schema.items as Record<string, unknown>;
+            if (items) {
+                return `z.array(${schemaToZodType(items)})`;
+            }
+            return "z.array(z.unknown())";
+
+        case "object":
+        default:
+            const properties = schema.properties as Record<string, Record<string, unknown>>;
+            const required = (schema.required || []) as string[];
+
+            if (properties) {
+                const props = Object.entries(properties).map(([key, propSchema]) => {
+                    const zodType = schemaToZodType(propSchema);
+                    const isRequired = required.includes(key);
+                    const desc = propSchema.description as string;
+                    let prop = `${key}: ${zodType}`;
+                    if (!isRequired) prop += ".optional()";
+                    if (desc) prop += `.describe("${desc.replace(/"/g, '\\"').replace(/\n/g, ' ')}")`;
+                    return prop;
+                });
+                return `z.object({\n    ${props.join(",\n    ")}\n  })`;
+            }
+
+            // No properties defined, accept any object
+            return "z.record(z.unknown())";
+    }
 }
 
 // Convert type to Python type
@@ -78,6 +159,60 @@ function toPythonType(type: string): string {
         object: "dict",
     };
     return map[type.toLowerCase()] || "str";
+}
+
+function toSafeIdentifier(value: string, fallback: string): string {
+    const normalized = value
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, "_")
+        .replace(/^_+|_+$/g, "");
+
+    const safeValue = normalized || fallback;
+    return /^[a-zA-Z_]/.test(safeValue) ? safeValue : `${fallback}_${safeValue}`;
+}
+
+function toJsStringLiteral(str: string): string {
+    if (!str) return '""';
+
+    const escaped = str
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r")
+        .replace(/\t/g, "\\t");
+
+    return `"${escaped}"`;
+}
+
+function toPythonStringLiteral(str: string): string {
+    if (!str) return '""';
+
+    const escaped = str
+        .replace(/\\/g, "\\\\")
+        .replace(/"/g, '\\"')
+        .replace(/\n/g, "\\n");
+
+    return `"${escaped}"`;
+}
+
+function getParameterLocation(
+    parameter: ToolConfig["parameters"][number],
+    path: string,
+    method: string
+): "path" | "query" | "header" | "body" {
+    if (parameter.location) {
+        return parameter.location;
+    }
+
+    if (path.includes(`{${parameter.originalName || parameter.name}}`)) {
+        return "path";
+    }
+
+    if (["POST", "PUT", "PATCH"].includes(method)) {
+        return "body";
+    }
+
+    return "query";
 }
 
 // Generate Node.js MCP server
@@ -97,6 +232,7 @@ function generateNodeProject(req: GenerateRequest): Map<string, string> {
         },
         dependencies: {
             "@modelcontextprotocol/sdk": "^1.0.0",
+            dotenv: "^16.4.7",
             zod: "^3.22.0",
         },
         devDependencies: {
@@ -135,41 +271,77 @@ function generateNodeProject(req: GenerateRequest): Map<string, string> {
     files.set(".env.example", envExample);
 
     // Generate tools array for template
-    const toolsData = tools.map((tool) => {
+    const toolsData = tools.map((tool, toolIndex) => {
         const { method, path } = parseEndpointId(tool.endpointId);
-        const isPathParam = (name: string) => path.includes(`{${name}}`);
-        const isBodyMethod = ["POST", "PUT", "PATCH"].includes(method);
-        const pathParams = tool.parameters.filter(p => isPathParam(p.name));
-        const queryParams = tool.parameters.filter(p => !isPathParam(p.name) && !isBodyMethod);
-        const bodyParams = tool.parameters.filter(p => !isPathParam(p.name) && isBodyMethod);
+        const normalizedParams = tool.parameters.map((parameter, parameterIndex) => {
+            const argName = toSafeIdentifier(
+                parameter.name || parameter.originalName,
+                `param_${parameterIndex + 1}`
+            );
+            const apiName = parameter.originalName || parameter.name;
+            const location = getParameterLocation(parameter, path, method);
 
-        // Check if single body param (pass directly) vs multiple (create object)
-        const hasSingleBodyParam = bodyParams.length === 1;
-        const singleBodyParamName = hasSingleBodyParam ? bodyParams[0].name : null;
+            return {
+                ...parameter,
+                argName,
+                apiName,
+                apiNameLiteral: JSON.stringify(apiName),
+                location,
+                jsPropertyKey: JSON.stringify(argName),
+                jsArgAccessor: `args[${JSON.stringify(argName)}]`,
+                zodType: toZodType(parameter.type, parameter.schema),
+                descriptionLiteral: parameter.description
+                    ? toJsStringLiteral(parameter.description)
+                    : "",
+            };
+        });
+
+        const pathParams = normalizedParams.filter((parameter) => parameter.location === "path");
+        const queryParams = normalizedParams.filter((parameter) => parameter.location === "query");
+        const headerParams = normalizedParams.filter((parameter) => parameter.location === "header");
+        const bodyParams = normalizedParams.filter((parameter) => parameter.location === "body");
+        const bodyType = tool.bodySchema?.type;
+        const isRawBody =
+            bodyParams.length === 1 &&
+            (bodyParams[0].apiName === "body" || bodyType === "array" || bodyType === "string" || bodyType === "number" || bodyType === "integer" || bodyType === "boolean");
+        const hasQueryAuth = authConfig.type === "apiKey" && authConfig.apiKey?.in === "query";
 
         return {
             ...tool,
+            functionName: toSafeIdentifier(tool.toolName, `tool_${toolIndex + 1}`),
             method,
             path,
-            hasQueryParams: queryParams.length > 0,
+            descriptionLiteral: toJsStringLiteral(tool.description),
+            hasQueryParams: queryParams.length > 0 || hasQueryAuth,
+            hasApiKeyQuery: hasQueryAuth,
+            queryApiKeyName: authConfig.apiKey?.name || "api_key",
+            hasHeaderParams: headerParams.length > 0,
             hasBodyParams: bodyParams.length > 0,
-            hasSingleBodyParam,
-            singleBodyParamName,
-            bodyParams: bodyParams.map(p => ({ name: p.name })),
-            zodParams: tool.parameters.map((p) => ({
-                name: p.name,
-                zodType: toZodType(p.type),
-                required: p.required,
-                description: p.description,
-                isPathParam: isPathParam(p.name),
-                isQueryParam: queryParams.some(q => q.name === p.name),
-                isBodyParam: bodyParams.some(b => b.name === p.name),
+            isRawBody,
+            isObjectBody: bodyParams.length > 0 && !isRawBody,
+            rawBodyAccessor: bodyParams[0]?.jsArgAccessor,
+            pathParams,
+            queryParams,
+            headerParams,
+            bodyParams: bodyParams.map((parameter) => ({
+                apiNameLiteral: JSON.stringify(parameter.apiName),
+                jsArgAccessor: parameter.jsArgAccessor,
+            })),
+            zodParams: normalizedParams.map((parameter) => ({
+                propertyKey: JSON.stringify(parameter.argName),
+                zodType: parameter.zodType,
+                required: parameter.required,
+                descriptionLiteral: parameter.descriptionLiteral,
+                apiNameLiteral: JSON.stringify(parameter.apiName),
+                jsArgAccessor: parameter.jsArgAccessor,
+                location: parameter.location,
             })),
         };
     });
 
     // src/index.ts
-    const indexTemplate = `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+    const indexTemplate = `import "dotenv/config";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 {{#if isStdio}}
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 {{else if isSse}}
@@ -195,7 +367,7 @@ const BASIC_PASSWORD = process.env.BASIC_PASSWORD || "";
 {{/if}}
 
 // Create headers with auth
-function getHeaders(): Record<string, string> {
+function getHeaders(extraHeaders: Record<string, string> = {}): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
   };
@@ -210,7 +382,7 @@ function getHeaders(): Record<string, string> {
 {{#if hasBasic}}
   headers["Authorization"] = \`Basic \${Buffer.from(\`\${BASIC_USERNAME}:\${BASIC_PASSWORD}\`).toString("base64")}\`;
 {{/if}}
-  return headers;
+  return { ...headers, ...extraHeaders };
 }
 
 // Initialize MCP server
@@ -223,47 +395,68 @@ const server = new McpServer({
 {{#each tools}}
 server.tool(
   "{{toolName}}",
-  "{{description}}",
+  {{{descriptionLiteral}}},
   {
 {{#each zodParams}}
-    {{name}}: {{zodType}}{{#unless required}}.optional(){{/unless}}{{#if description}}.describe("{{description}}"){{/if}},
+    {{{propertyKey}}}: {{{zodType}}}{{#unless required}}.optional(){{/unless}}{{#if descriptionLiteral}}.describe({{{descriptionLiteral}}}){{/if}},
 {{/each}}
   },
   async (args) => {
     try {
       let url = \`\${API_BASE_URL}{{path}}\`;
-      {{#each zodParams}}
-      {{#if isPathParam}}
-      url = url.replace("{{curlyOpen}}{{name}}{{curlyClose}}", String(args.{{name}}));
-      {{/if}}
+      {{#each pathParams}}
+      url = url.replace("{{curlyOpen}}{{apiName}}{{curlyClose}}", String({{{jsArgAccessor}}}));
       {{/each}}
       {{#if hasQueryParams}}
       const queryParams = new URLSearchParams();
-      {{#each zodParams}}
-      {{#if isQueryParam}}
-      if (args.{{name}} !== undefined) queryParams.append("{{name}}", String(args.{{name}}));
-      {{/if}}
+      {{#each queryParams}}
+      if ({{{jsArgAccessor}}} !== undefined) queryParams.append({{{apiNameLiteral}}}, String({{{jsArgAccessor}}}));
       {{/each}}
+      {{#if hasApiKeyQuery}}
+      if (API_KEY) queryParams.append("{{queryApiKeyName}}", API_KEY);
+      {{/if}}
       if (queryParams.toString()) url += \`?\${queryParams.toString()}\`;
+      {{/if}}
+      {{#if hasHeaderParams}}
+      const requestHeaders: Record<string, string> = {};
+      {{#each headerParams}}
+      if ({{{jsArgAccessor}}} !== undefined) requestHeaders[{{{apiNameLiteral}}}] = String({{{jsArgAccessor}}});
+      {{/each}}
       {{/if}}
       
       const response = await fetch(url, {
         method: "{{method}}",
-        headers: getHeaders(),
-{{#if (isBodyMethod method)}}
-{{#if hasSingleBodyParam}}
-        body: JSON.stringify(args.{{singleBodyParamName}}),
-{{else}}
+        headers: getHeaders({{#if hasHeaderParams}}requestHeaders{{else}}{}{{/if}}),
 {{#if hasBodyParams}}
-        body: JSON.stringify({ {{#each bodyParams}}{{name}}: args.{{name}}{{#unless @last}}, {{/unless}}{{/each}} }),
+{{#if isRawBody}}
+        body: JSON.stringify({{{rawBodyAccessor}}}),
 {{/if}}
+{{#if isObjectBody}}
+        body: JSON.stringify({
+{{#each bodyParams}}
+          {{{apiNameLiteral}}}: {{{jsArgAccessor}}},
+{{/each}}
+        }),
 {{/if}}
 {{/if}}
       });
-      
-      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+      }
+
+      const responseText = await response.text();
+      const formatted = (() => {
+        if (!responseText) return "OK";
+        try {
+          return JSON.stringify(JSON.parse(responseText), null, 2);
+        } catch {
+          return responseText;
+        }
+      })();
+
       return {
-        content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+        content: [{ type: "text", text: formatted }],
       };
     } catch (error) {
       return {
@@ -325,6 +518,7 @@ main().catch(console.error);
         isSse: serverConfig.transport === "sse",
         isHttp: serverConfig.transport === "http",
         hasApiKey: authConfig.type === "apiKey",
+        hasApiKeyQuery: authConfig.type === "apiKey" && authConfig.apiKey?.in === "query",
         hasBearer: authConfig.type === "bearer",
         hasBasic: authConfig.type === "basic",
         apiKeyName: authConfig.apiKey?.name,
@@ -413,21 +607,24 @@ build-backend = "hatchling.build"
     files.set(".env.example", envExample);
 
     // Generate tools data with proper param ordering (required first for Python)
-    const toolsData = tools.map((tool) => {
+    const toolsData = tools.map((tool, toolIndex) => {
         const { method, path } = parseEndpointId(tool.endpointId);
-        const isPathParam = (name: string) => path.includes(`{${name}}`);
-        const isBodyMethod = ["POST", "PUT", "PATCH"].includes(method);
+        const allParams = tool.parameters.map((parameter, parameterIndex) => {
+            const argName = toSafeIdentifier(
+                parameter.name || parameter.originalName,
+                `param_${parameterIndex + 1}`
+            );
+            const apiName = parameter.originalName || parameter.name;
+            const location = getParameterLocation(parameter, path, method);
 
-        // Categorize params
-        const allParams = tool.parameters.map((p) => ({
-            name: p.name,
-            pythonType: toPythonType(p.type),
-            required: p.required,
-            description: p.description,
-            isPathParam: isPathParam(p.name),
-            isQueryParam: !isPathParam(p.name) && !isBodyMethod,
-            isBodyParam: !isPathParam(p.name) && isBodyMethod,
-        }));
+            return {
+                ...parameter,
+                argName,
+                apiName,
+                location,
+                pythonType: toPythonType(parameter.type),
+            };
+        });
 
         // Sort: required first, then optional (Python syntax requirement)
         const sortedParams = [...allParams].sort((a, b) => {
@@ -436,24 +633,39 @@ build-backend = "hatchling.build"
             return 0;
         });
 
-        const queryParams = allParams.filter(p => p.isQueryParam);
-        const bodyParams = allParams.filter(p => p.isBodyParam);
-
-        // Check if there's exactly one body param (pass it directly as json=body)
-        // Multiple body params means we need to create a dict
-        const singleBodyParam = bodyParams.length === 1 ? bodyParams[0] : null;
+        const pathParams = allParams.filter((parameter) => parameter.location === "path");
+        const queryParams = allParams.filter((parameter) => parameter.location === "query");
+        const headerParams = allParams.filter((parameter) => parameter.location === "header");
+        const bodyParams = allParams.filter((parameter) => parameter.location === "body");
+        const bodyType = tool.bodySchema?.type;
+        const isRawBody =
+            bodyParams.length === 1 &&
+            (bodyParams[0].apiName === "body" || bodyType === "array" || bodyType === "string" || bodyType === "number" || bodyType === "integer" || bodyType === "boolean");
+        const hasQueryAuth = authConfig.type === "apiKey" && authConfig.apiKey?.in === "query";
 
         return {
             ...tool,
+            functionName: toSafeIdentifier(tool.toolName, `tool_${toolIndex + 1}`),
+            toolNameLiteral: toPythonStringLiteral(tool.toolName),
+            descriptionDocstring: tool.description.replace(/"""/g, "'''"),
             method,
             path,
-            hasQueryParams: queryParams.length > 0,
+            hasQueryParams: queryParams.length > 0 || hasQueryAuth,
+            hasApiKeyQuery: hasQueryAuth,
+            queryApiKeyName: authConfig.apiKey?.name || "api_key",
+            hasHeaderParams: headerParams.length > 0,
             hasBodyParams: bodyParams.length > 0,
-            hasSingleBodyParam: singleBodyParam !== null,
-            singleBodyParamName: singleBodyParam?.name,
+            isRawBody,
+            isObjectBody: bodyParams.length > 0 && !isRawBody,
+            rawBodyArgName: bodyParams[0]?.argName,
             pythonParams: sortedParams,
+            pathParams,
             queryParams,
-            bodyParams,
+            headerParams,
+            bodyParams: bodyParams.map((parameter) => ({
+                apiName: parameter.apiName,
+                argName: parameter.argName,
+            })),
         };
     });
 
@@ -484,10 +696,10 @@ BASIC_PASSWORD = os.getenv("BASIC_PASSWORD", "")
 mcp = FastMCP("{{serverName}}")
 
 # HTTP client
-client = httpx.Client()
+client = httpx.Client(timeout=30.0)
 
 
-def get_headers() -> dict:
+def get_headers(extra_headers: dict | None = None) -> dict:
     """Get request headers with authentication."""
     headers = {"Content-Type": "application/json"}
 {{#if hasApiKey}}
@@ -503,47 +715,63 @@ def get_headers() -> dict:
     auth = base64.b64encode(f"{BASIC_USERNAME}:{BASIC_PASSWORD}".encode()).decode()
     headers["Authorization"] = f"Basic {auth}"
 {{/if}}
+    if extra_headers:
+        headers.update(extra_headers)
     return headers
 
 
 {{#each tools}}
-@mcp.tool()
-def {{toolName}}({{#each pythonParams}}{{name}}: {{pythonType}}{{#unless required}} = None{{/unless}}{{#unless @last}}, {{/unless}}{{/each}}) -> dict:
-    """{{description}}"""
+@mcp.tool(name={{{toolNameLiteral}}})
+def {{functionName}}({{#each pythonParams}}{{argName}}: {{pythonType}}{{#unless required}} | None = None{{/unless}}{{#unless @last}}, {{/unless}}{{/each}}) -> dict:
+    """{{{descriptionDocstring}}}"""
     url = f"{API_BASE_URL}{{path}}"
-{{#each pythonParams}}
-{{#if isPathParam}}
-    url = url.replace("{{curlyOpen}}{{name}}{{curlyClose}}", str({{name}}))
-{{/if}}
+{{#each pathParams}}
+    url = url.replace("{{curlyOpen}}{{apiName}}{{curlyClose}}", str({{argName}}))
 {{/each}}
 {{#if hasQueryParams}}
     params = {}
 {{#each queryParams}}
-    if {{name}} is not None:
-        params["{{name}}"] = {{name}}
+    if {{argName}} is not None:
+        params["{{apiName}}"] = {{argName}}
+{{/each}}
+{{#if hasApiKeyQuery}}
+    if API_KEY:
+        params["{{queryApiKeyName}}"] = API_KEY
+{{/if}}
+{{/if}}
+{{#if hasHeaderParams}}
+    request_headers = {}
+{{#each headerParams}}
+    if {{argName}} is not None:
+        request_headers["{{apiName}}"] = str({{argName}})
 {{/each}}
 {{/if}}
     
     response = client.request(
         method="{{method}}",
         url=url,
-        headers=get_headers(),
+        headers=get_headers({{#if hasHeaderParams}}request_headers{{else}}None{{/if}}),
 {{#if hasQueryParams}}
         params=params,
 {{/if}}
 {{#if hasBodyParams}}
-{{#if hasSingleBodyParam}}
-        json={{singleBodyParamName}},
-{{else}}
+{{#if isRawBody}}
+        json={{rawBodyArgName}},
+{{/if}}
+{{#if isObjectBody}}
         json={
 {{#each bodyParams}}
-            "{{name}}": {{name}},
+            "{{apiName}}": {{argName}},
 {{/each}}
         },
 {{/if}}
 {{/if}}
     )
-    return response.json()
+    response.raise_for_status()
+
+    if "application/json" in response.headers.get("content-type", ""):
+        return response.json()
+    return {"text": response.text}
 
 
 {{/each}}
@@ -561,6 +789,7 @@ if __name__ == "__main__":
         transport: serverConfig.transport,
         isStdio: serverConfig.transport === "stdio",
         hasApiKey: authConfig.type === "apiKey",
+        hasApiKeyQuery: authConfig.type === "apiKey" && authConfig.apiKey?.in === "query",
         hasBearer: authConfig.type === "bearer",
         hasBasic: authConfig.type === "basic",
         apiKeyName: authConfig.apiKey?.name,
@@ -612,21 +841,10 @@ ${tools.map((t) => `- **${t.toolName}**: ${t.description}`).join("\n")}
     return files;
 }
 
-
-// Register Handlebars helpers
-function registerHelpers() {
-    Handlebars.registerHelper("isPathParam", (path: string, paramName: string) => {
-        return path.includes(`{${paramName}}`);
-    });
-
-    Handlebars.registerHelper("isBodyMethod", (method: string) => {
-        return ["POST", "PUT", "PATCH"].includes(method);
-    });
-}
-
 export async function POST(request: NextRequest) {
     try {
         const body: GenerateRequest = await request.json();
+        const isPreview = request.nextUrl.searchParams.get("preview") === "true";
 
         // Validate request
         if (!body.tools || body.tools.length === 0) {
@@ -636,15 +854,21 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Register helpers
-        registerHelpers();
-
         // Generate files based on language
         let files: Map<string, string>;
         if (body.exportConfig.language === "node") {
             files = generateNodeProject(body);
         } else {
             files = generatePythonProject(body);
+        }
+
+        // If preview mode, return files as JSON
+        if (isPreview) {
+            const filesArray = Array.from(files.entries()).map(([name, content]) => ({
+                name,
+                content,
+            }));
+            return NextResponse.json({ files: filesArray });
         }
 
         // Create zip archive

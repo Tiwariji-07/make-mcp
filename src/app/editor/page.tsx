@@ -2,466 +2,334 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, X, Pencil } from "lucide-react";
+import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown, ChevronRight } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useProjectStore, ParsedEndpoint, ToolConfig } from "@/store/project-store";
 
 export default function EditorPage() {
-    const router = useRouter();
-    const {
-        spec,
-        tools,
-        toggleTool,
-        toggleAllTools,
-        updateToolConfig,
-        setCurrentStep,
-    } = useProjectStore();
+  const router = useRouter();
+  const {
+    spec,
+    tools,
+    toggleTool,
+    toggleAllTools,
+    updateToolConfig,
+    setCurrentStep,
+  } = useProjectStore();
 
-    const [searchQuery, setSearchQuery] = useState("");
-    const [selectedMethodFilters, setSelectedMethodFilters] = useState<string[]>([]);
-    const [selectedEndpointId, setSelectedEndpointId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedMethodFilters, setSelectedMethodFilters] = useState<string[]>([]);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-    // Redirect if no spec loaded
-    useEffect(() => {
-        if (!spec) {
-            router.push("/");
-        }
-    }, [spec, router]);
+  useEffect(() => {
+    if (!spec) router.push("/");
+  }, [spec, router]);
 
-    if (!spec) return null;
+  if (!spec) return null;
 
-    // Filter endpoints
-    const filteredEndpoints = spec.endpoints.filter((endpoint) => {
-        const matchesSearch =
-            !searchQuery ||
-            endpoint.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            endpoint.summary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            endpoint.operationId?.toLowerCase().includes(searchQuery.toLowerCase());
+  const filteredEndpoints = spec.endpoints.filter((ep) => {
+    const matchesSearch =
+      !searchQuery ||
+      ep.path.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ep.summary?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      ep.operationId?.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesMethod =
+      selectedMethodFilters.length === 0 || selectedMethodFilters.includes(ep.method);
+    return matchesSearch && matchesMethod;
+  });
 
-        const matchesMethod =
-            selectedMethodFilters.length === 0 ||
-            selectedMethodFilters.includes(endpoint.method);
+  const selectedCount = tools.filter((t) => t.enabled).length;
+  const allSelected = tools.every((t) => t.enabled);
 
-        return matchesSearch && matchesMethod;
-    });
-
-    const selectedCount = tools.filter((t) => t.enabled).length;
-    const allSelected = tools.every((t) => t.enabled);
-
-    const handleContinue = () => {
-        setCurrentStep("export");
-        router.push("/export");
-    };
-
-    const toggleMethodFilter = (method: string) => {
-        setSelectedMethodFilters((prev) =>
-            prev.includes(method)
-                ? prev.filter((m) => m !== method)
-                : [...prev, method]
-        );
-    };
-
-    const selectedEndpoint = selectedEndpointId
-        ? spec.endpoints.find((e) => e.id === selectedEndpointId)
-        : null;
-    const selectedTool = selectedEndpointId
-        ? tools.find((t) => t.endpointId === selectedEndpointId)
-        : null;
-
-    return (
-        <div className="min-h-screen overflow-x-hidden">
-            <Header />
-
-            <main className="pt-24 pb-20 px-6">
-                <div className="max-w-7xl mx-auto flex gap-6">
-                    {/* Main Content */}
-                    <div className={`flex-1 transition-all ${selectedEndpointId ? 'max-w-[calc(100%-400px)]' : ''}`}>
-                        {/* Header */}
-                        <div className="mb-8">
-                            <h1 className="text-3xl font-bold mb-2">Select Endpoints</h1>
-                            <p className="text-muted-foreground">
-                                Choose which API endpoints to expose as MCP tools.
-                                Found <span className="text-foreground font-medium">{spec.endpoints.length}</span> endpoints
-                                in <span className="text-foreground font-medium">{spec.info.title}</span>.
-                            </p>
-                        </div>
-
-                        {/* Toolbar */}
-                        <div className="glass p-4 mb-6 flex flex-wrap items-center gap-4">
-                            {/* Search */}
-                            <div className="relative flex-1 min-w-[200px]">
-                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-                                <Input
-                                    type="text"
-                                    placeholder="Search endpoints..."
-                                    value={searchQuery}
-                                    onChange={(e) => setSearchQuery(e.target.value)}
-                                    className="pl-10 bg-white/5 border-white/10"
-                                />
-                            </div>
-
-                            {/* Method Filters */}
-                            <div className="flex items-center gap-2">
-                                {["GET", "POST", "PUT", "PATCH", "DELETE"].map((method) => (
-                                    <button
-                                        key={method}
-                                        onClick={() => toggleMethodFilter(method)}
-                                        className={`
-                                            px-3 py-1.5 text-xs font-medium border transition-colors
-                                            ${selectedMethodFilters.includes(method)
-                                                ? getMethodClasses(method as ParsedEndpoint["method"])
-                                                : "bg-white/5 border-white/10 text-muted-foreground hover:bg-white/10"
-                                            }
-                                        `}
-                                    >
-                                        {method}
-                                    </button>
-                                ))}
-                            </div>
-
-                            {/* Select All */}
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                onClick={() => toggleAllTools(!allSelected)}
-                                className="border-white/10 hover:bg-white/10"
-                            >
-                                {allSelected ? (
-                                    <>
-                                        <Square className="w-4 h-4 mr-2" />
-                                        Deselect All
-                                    </>
-                                ) : (
-                                    <>
-                                        <CheckSquare className="w-4 h-4 mr-2" />
-                                        Select All
-                                    </>
-                                )}
-                            </Button>
-                        </div>
-
-                        {/* Endpoint List */}
-                        <div className="space-y-2 mb-8">
-                            {filteredEndpoints.map((endpoint) => {
-                                const tool = tools.find((t) => t.endpointId === endpoint.id);
-                                if (!tool) return null;
-
-                                return (
-                                    <EndpointItem
-                                        key={endpoint.id}
-                                        endpoint={endpoint}
-                                        tool={tool}
-                                        isSelected={selectedEndpointId === endpoint.id}
-                                        onToggle={() => toggleTool(endpoint.id)}
-                                        onSelect={() => setSelectedEndpointId(
-                                            selectedEndpointId === endpoint.id ? null : endpoint.id
-                                        )}
-                                    />
-                                );
-                            })}
-
-                            {filteredEndpoints.length === 0 && (
-                                <div className="glass p-12 text-center">
-                                    <p className="text-muted-foreground">No endpoints match your filters.</p>
-                                </div>
-                            )}
-                        </div>
-
-                        {/* Footer Actions */}
-                        <div className="flex items-center justify-between glass p-4">
-                            <Button
-                                variant="outline"
-                                onClick={() => {
-                                    setCurrentStep("import");
-                                    router.push("/");
-                                }}
-                                className="border-white/10 hover:bg-white/10"
-                            >
-                                <ArrowLeft className="w-4 h-4 mr-2" />
-                                Back
-                            </Button>
-
-                            <div className="flex items-center gap-4">
-                                <span className="text-sm text-muted-foreground">
-                                    {selectedCount} of {tools.length} endpoints selected
-                                </span>
-                                <Button
-                                    onClick={handleContinue}
-                                    disabled={selectedCount === 0}
-                                    className="bg-primary hover:bg-primary/90"
-                                >
-                                    Continue
-                                    <ArrowRight className="w-4 h-4 ml-2" />
-                                </Button>
-                            </div>
-                        </div>
-                    </div>
-
-                    {/* Sidebar Panel */}
-                    {selectedEndpoint && selectedTool && (
-                        <ToolConfigSidebar
-                            endpoint={selectedEndpoint}
-                            tool={selectedTool}
-                            onClose={() => setSelectedEndpointId(null)}
-                            onUpdate={(config) => updateToolConfig(selectedTool.endpointId, config)}
-                        />
-                    )}
-                </div>
-            </main>
-        </div>
+  const toggleMethodFilter = (m: string) =>
+    setSelectedMethodFilters((prev) =>
+      prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]
     );
-}
 
-function EndpointItem({
-    endpoint,
-    tool,
-    isSelected,
-    onToggle,
-    onSelect,
-}: {
-    endpoint: ParsedEndpoint;
-    tool: ToolConfig;
-    isSelected: boolean;
-    onToggle: () => void;
-    onSelect: () => void;
-}) {
-    return (
-        <div
-            className={`
-                glass p-4 flex items-start gap-4 cursor-pointer transition-all
-                ${isSelected ? "border-primary/50 ring-1 ring-primary/30" : ""}
-                ${tool.enabled ? "border-primary/30 bg-primary/5" : "hover:bg-white/[0.02]"}
-            `}
-            onClick={onSelect}
-        >
-            <Checkbox
-                checked={tool.enabled}
-                onCheckedChange={onToggle}
-                onClick={(e) => e.stopPropagation()}
-                className="mt-1"
-            />
+  return (
+    <div className="min-h-screen flex flex-col">
+      <Header />
 
-            <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-3 mb-1">
-                    <Badge className={getMethodClasses(endpoint.method)}>
-                        {endpoint.method}
-                    </Badge>
-                    <code className="text-sm text-foreground font-mono truncate">
-                        {endpoint.path}
-                    </code>
-                </div>
-
-                {(endpoint.summary || endpoint.description) && (
-                    <p className="text-sm text-muted-foreground line-clamp-2">
-                        {endpoint.summary || endpoint.description}
-                    </p>
-                )}
-
-                {tool.enabled && (
-                    <div className="mt-2 pt-2 border-t border-white/5">
-                        <div className="flex items-center gap-2 text-xs">
-                            <span className="text-muted-foreground">Tool name:</span>
-                            <code className="px-1.5 py-0.5 bg-white/5 text-primary font-mono">
-                                {tool.toolName}
-                            </code>
-                        </div>
-                    </div>
-                )}
+      <main className="pt-14 flex-1 flex flex-col relative z-10">
+        {/* Toolbar */}
+        <div className="border-b border-border bg-surface sticky top-14 z-20">
+          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4 flex-wrap">
+            {/* Search */}
+            <div className="relative flex-1 min-w-[180px]">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
+              <Input
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search endpoints..."
+                className="pl-9 h-8 bg-background border-border text-xs focus:border-primary"
+              />
             </div>
 
-            <div className="flex items-center gap-2">
-                {endpoint.parameters.length > 0 && (
-                    <div className="text-xs text-muted-foreground">
-                        {endpoint.parameters.length} param{endpoint.parameters.length > 1 ? "s" : ""}
-                    </div>
-                )}
-                <Button
-                    variant="ghost"
-                    size="sm"
-                    className="h-8 w-8 p-0 text-muted-foreground hover:text-foreground"
-                    onClick={(e) => {
-                        e.stopPropagation();
-                        onSelect();
-                    }}
+            {/* Method filters */}
+            <div className="flex gap-1">
+              {["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => (
+                <button
+                  key={m}
+                  onClick={() => toggleMethodFilter(m)}
+                  className={`
+                    px-2.5 py-1 text-[10px] font-semibold tracking-wider transition-all
+                    ${selectedMethodFilters.includes(m)
+                      ? getMethodClasses(m as ParsedEndpoint["method"])
+                      : "text-muted-foreground hover:text-foreground bg-transparent border border-transparent hover:border-border"
+                    }
+                  `}
                 >
-                    <Pencil className="w-4 h-4" />
-                </Button>
+                  {m}
+                </button>
+              ))}
             </div>
+
+            {/* Select all */}
+            <button
+              onClick={() => toggleAllTools(!allSelected)}
+              className="flex items-center gap-1.5 text-[11px] tracking-wider text-muted-foreground hover:text-primary transition-colors"
+            >
+              {allSelected ? <Square className="w-3.5 h-3.5" /> : <CheckSquare className="w-3.5 h-3.5" />}
+              {allSelected ? "NONE" : "ALL"}
+            </button>
+          </div>
         </div>
-    );
-}
 
-function ToolConfigSidebar({
-    endpoint,
-    tool,
-    onClose,
-    onUpdate,
-}: {
-    endpoint: ParsedEndpoint;
-    tool: ToolConfig;
-    onClose: () => void;
-    onUpdate: (config: Partial<ToolConfig>) => void;
-}) {
-    return (
-        <div className="w-[380px] shrink-0">
-            <div className="glass sticky top-24 p-6 space-y-6">
-                {/* Header */}
-                <div className="flex items-center justify-between">
-                    <h2 className="text-lg font-semibold flex items-center gap-2">
-                        <Pencil className="w-4 h-4 text-primary" />
-                        Configure Tool
-                    </h2>
-                    <Button
-                        variant="ghost"
-                        size="sm"
-                        className="h-8 w-8 p-0"
-                        onClick={onClose}
-                    >
-                        <X className="w-4 h-4" />
-                    </Button>
-                </div>
+        {/* Table header */}
+        <div className="border-b border-border bg-surface/50">
+          <div className="max-w-[1400px] mx-auto px-6">
+            <div className="grid grid-cols-[40px_70px_1fr_180px_80px_40px] gap-4 py-2 text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+              <span></span>
+              <span>Method</span>
+              <span>Path</span>
+              <span>Tool Name</span>
+              <span>Params</span>
+              <span></span>
+            </div>
+          </div>
+        </div>
 
-                {/* Endpoint Info */}
-                <div className="p-3 bg-white/5 rounded border border-white/5">
-                    <div className="flex items-center gap-2 mb-1">
-                        <Badge className={getMethodClasses(endpoint.method)}>
-                            {endpoint.method}
-                        </Badge>
-                        <code className="text-xs font-mono text-muted-foreground truncate">
-                            {endpoint.path}
-                        </code>
+        {/* Endpoint rows */}
+        <div className="flex-1 overflow-y-auto">
+          <div className="max-w-[1400px] mx-auto px-6">
+            {filteredEndpoints.map((ep) => {
+              const tool = tools.find((t) => t.endpointId === ep.id);
+              if (!tool) return null;
+              const isExpanded = expandedId === ep.id;
+
+              return (
+                <div key={ep.id} className="border-b border-border">
+                  {/* Row */}
+                  <div
+                    className={`
+                      grid grid-cols-[40px_70px_1fr_180px_80px_40px] gap-4 py-3 items-center cursor-pointer transition-colors
+                      ${tool.enabled ? "bg-primary/[0.03]" : "hover:bg-surface/50"}
+                      ${isExpanded ? "bg-surface" : ""}
+                    `}
+                    onClick={() => setExpandedId(isExpanded ? null : ep.id)}
+                  >
+                    {/* Checkbox */}
+                    <div className="flex justify-center">
+                      <Checkbox
+                        checked={tool.enabled}
+                        onCheckedChange={() => toggleTool(ep.id)}
+                        onClick={(e) => e.stopPropagation()}
+                      />
                     </div>
-                </div>
 
-                {/* Tool Name */}
-                <div className="space-y-2">
-                    <Label className="text-xs uppercase text-muted-foreground font-semibold tracking-wider">
-                        Tool Name
-                    </Label>
-                    <Input
-                        value={tool.toolName}
-                        onChange={(e) => onUpdate({ toolName: e.target.value })}
-                        className="bg-white/5 border-white/10 font-mono"
-                        placeholder="e.g., getPetById"
-                    />
-                    <p className="text-xs text-muted-foreground">
-                        This is how the tool appears to the LLM.
-                    </p>
-                </div>
+                    {/* Method */}
+                    <Badge className={`${getMethodClasses(ep.method)} text-[10px] font-bold tracking-wider w-fit`}>
+                      {ep.method}
+                    </Badge>
 
-                {/* Tool Description */}
-                <div className="space-y-2">
-                    <Label className="text-xs uppercase text-muted-foreground font-semibold tracking-wider">
-                        Description
-                    </Label>
-                    <Textarea
-                        value={tool.description}
-                        onChange={(e) => onUpdate({ description: e.target.value })}
-                        className="bg-white/5 border-white/10 min-h-[80px] resize-none"
-                        placeholder="Describe what this tool does..."
-                    />
-                    <p className="text-xs text-muted-foreground">
-                        Clear descriptions help the LLM understand when to use this tool.
-                    </p>
-                </div>
+                    {/* Path */}
+                    <div className="min-w-0">
+                      <code className="text-xs truncate block">{ep.path}</code>
+                      {ep.summary && (
+                        <span className="text-[10px] text-muted-foreground truncate block mt-0.5">
+                          {ep.summary}
+                        </span>
+                      )}
+                    </div>
 
-                {/* Parameters */}
-                {tool.parameters.length > 0 && (
-                    <div className="space-y-3">
-                        <Label className="text-xs uppercase text-muted-foreground font-semibold tracking-wider">
-                            Parameters ({tool.parameters.length})
-                        </Label>
-                        <div className="space-y-3 max-h-[300px] overflow-y-auto pr-2">
-                            {tool.parameters.map((param, idx) => (
-                                <div
-                                    key={`${param.originalName}-${idx}`}
-                                    className="p-3 bg-white/5 rounded border border-white/5 space-y-2"
-                                >
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <Badge
-                                                variant="outline"
-                                                className={`text-[10px] px-1.5 py-0 ${getLocationClasses(param.location)}`}
-                                            >
-                                                {param.location}
-                                            </Badge>
-                                            <code className="text-xs font-mono text-foreground">
-                                                {param.originalName}
-                                            </code>
-                                            <span className="text-xs text-muted-foreground">
-                                                {param.type}
-                                            </span>
-                                        </div>
-                                        {param.required && (
-                                            <Badge variant="outline" className="text-[10px] px-1.5 py-0 border-yellow-500/30 text-yellow-500">
-                                                required
-                                            </Badge>
-                                        )}
-                                    </div>
-                                    <Input
-                                        value={param.name}
-                                        onChange={(e) => {
-                                            const newParams = [...tool.parameters];
-                                            newParams[idx] = { ...param, name: e.target.value };
-                                            onUpdate({ parameters: newParams });
-                                        }}
-                                        className="h-8 text-sm bg-white/5 border-white/10 font-mono"
-                                        placeholder="Parameter name"
-                                    />
-                                    <Input
-                                        value={param.description}
-                                        onChange={(e) => {
-                                            const newParams = [...tool.parameters];
-                                            newParams[idx] = { ...param, description: e.target.value };
-                                            onUpdate({ parameters: newParams });
-                                        }}
-                                        className="h-8 text-sm bg-white/5 border-white/10"
-                                        placeholder="Description for LLM..."
-                                    />
-                                </div>
-                            ))}
+                    {/* Tool name */}
+                    <code className={`text-[11px] truncate ${tool.enabled ? "text-primary" : "text-muted-foreground"}`}>
+                      {tool.toolName}
+                    </code>
+
+                    {/* Params */}
+                    <span className="text-[11px] text-muted-foreground">
+                      {tool.parameters.length} param{tool.parameters.length !== 1 ? "s" : ""}
+                    </span>
+
+                    {/* Expand arrow */}
+                    <div className="flex justify-center">
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 text-muted-foreground transition-transform ${isExpanded ? "rotate-180" : ""}`}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Inline expansion */}
+                  {isExpanded && (
+                    <div className="animate-expand bg-surface border-t border-border px-6 py-5">
+                      <div className="grid md:grid-cols-2 gap-6 max-w-3xl">
+                        {/* Tool Name */}
+                        <div className="space-y-1.5">
+                          <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                            Tool Name
+                          </Label>
+                          <Input
+                            value={tool.toolName}
+                            onChange={(e) => updateToolConfig(ep.id, { toolName: e.target.value })}
+                            className="h-8 bg-background border-border text-xs focus:border-primary"
+                          />
                         </div>
-                    </div>
-                )}
 
-                {/* Enable/Disable */}
-                <div className="pt-4 border-t border-white/5">
-                    <Button
-                        variant={tool.enabled ? "outline" : "default"}
-                        className={`w-full ${tool.enabled ? "border-white/10" : ""}`}
-                        onClick={() => onUpdate({ enabled: !tool.enabled })}
-                    >
-                        {tool.enabled ? "Disable Tool" : "Enable Tool"}
-                    </Button>
+                        {/* Enable */}
+                        <div className="space-y-1.5">
+                          <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                            Status
+                          </Label>
+                          <Button
+                            variant={tool.enabled ? "default" : "outline"}
+                            size="sm"
+                            className={`w-full text-xs ${tool.enabled ? "bg-primary text-primary-foreground" : "border-border"}`}
+                            onClick={() => updateToolConfig(ep.id, { enabled: !tool.enabled })}
+                          >
+                            {tool.enabled ? "Enabled" : "Disabled"}
+                          </Button>
+                        </div>
+
+                        {/* Description */}
+                        <div className="space-y-1.5 md:col-span-2">
+                          <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                            Description
+                          </Label>
+                          <Textarea
+                            value={tool.description}
+                            onChange={(e) => updateToolConfig(ep.id, { description: e.target.value })}
+                            className="min-h-[60px] bg-background border-border text-xs resize-none focus:border-primary"
+                          />
+                        </div>
+
+                        {/* Parameters */}
+                        {tool.parameters.length > 0 && (
+                          <div className="md:col-span-2 space-y-2">
+                            <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                              Parameters ({tool.parameters.length})
+                            </Label>
+                            <div className="space-y-2 max-h-[250px] overflow-y-auto">
+                              {tool.parameters.map((param, idx) => (
+                                <div key={`${param.originalName}-${idx}`} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-[9px] w-12 justify-center ${getLocationClasses(param.location)}`}
+                                  >
+                                    {param.location}
+                                  </Badge>
+                                  <Input
+                                    value={param.name}
+                                    onChange={(e) => {
+                                      const newParams = [...tool.parameters];
+                                      newParams[idx] = { ...param, name: e.target.value };
+                                      updateToolConfig(ep.id, { parameters: newParams });
+                                    }}
+                                    className="h-7 w-32 bg-background border-border text-[11px] focus:border-primary"
+                                  />
+                                  <span className="text-[10px] text-muted-foreground">{param.type}</span>
+                                  {param.required && (
+                                    <span className="text-[9px] text-amber tracking-wider uppercase">req</span>
+                                  )}
+                                  <Input
+                                    value={param.description}
+                                    onChange={(e) => {
+                                      const newParams = [...tool.parameters];
+                                      newParams[idx] = { ...param, description: e.target.value };
+                                      updateToolConfig(ep.id, { parameters: newParams });
+                                    }}
+                                    className="h-7 flex-1 bg-background border-border text-[11px] focus:border-primary"
+                                    placeholder="Description..."
+                                  />
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
-            </div>
+              );
+            })}
+
+            {filteredEndpoints.length === 0 && (
+              <div className="py-20 text-center text-sm text-muted-foreground">
+                No endpoints match your filters.
+              </div>
+            )}
+          </div>
         </div>
-    );
+
+        {/* Sticky bottom bar */}
+        <div className="sticky bottom-0 border-t-2 border-primary bg-background z-20">
+          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
+            <Button
+              variant="ghost"
+              onClick={() => { setCurrentStep("import"); router.push("/"); }}
+              className="text-xs text-muted-foreground hover:text-foreground"
+            >
+              <ArrowLeft className="w-3.5 h-3.5 mr-2" />
+              Back
+            </Button>
+
+            <div className="flex items-center gap-6">
+              <span className="text-xs text-muted-foreground">
+                <span className="text-primary font-semibold">{selectedCount}</span>
+                <span className="mx-1">/</span>
+                <span>{tools.length}</span>
+                <span className="ml-1.5 tracking-wider uppercase text-[10px]">selected</span>
+              </span>
+
+              <Button
+                onClick={() => { setCurrentStep("export"); router.push("/export"); }}
+                disabled={selectedCount === 0}
+                className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 font-semibold text-xs tracking-wider"
+              >
+                Continue
+                <ArrowRight className="w-3.5 h-3.5 ml-2" />
+              </Button>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  );
 }
 
 function getMethodClasses(method: ParsedEndpoint["method"]): string {
-    const classes = {
-        GET: "method-get",
-        POST: "method-post",
-        PUT: "method-put",
-        PATCH: "method-patch",
-        DELETE: "method-delete",
-    };
-    return classes[method] || "bg-white/10";
+  const m: Record<string, string> = {
+    GET: "method-get",
+    POST: "method-post",
+    PUT: "method-put",
+    PATCH: "method-patch",
+    DELETE: "method-delete",
+  };
+  return m[method] || "";
 }
 
-function getLocationClasses(location: string): string {
-    const classes: Record<string, string> = {
-        path: "border-purple-500/30 text-purple-400",
-        query: "border-blue-500/30 text-blue-400",
-        header: "border-orange-500/30 text-orange-400",
-        body: "border-green-500/30 text-green-400",
-    };
-    return classes[location] || "border-white/20 text-muted-foreground";
+function getLocationClasses(loc: string): string {
+  const c: Record<string, string> = {
+    path: "border-purple-500/40 text-purple-400",
+    query: "border-blue/40 text-blue",
+    header: "border-amber/40 text-amber",
+    body: "border-green/40 text-green",
+  };
+  return c[loc] || "border-border text-muted-foreground";
 }
