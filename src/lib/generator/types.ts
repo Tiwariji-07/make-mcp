@@ -10,6 +10,8 @@ export type ExportFramework = "mcp-ts-sdk" | "fastmcp";
 export type PackageManager = "npm" | "pnpm" | "yarn";
 export type ParamLocation = "path" | "query" | "header" | "cookie" | "body";
 export type AuthStrategy = "none" | "apiKeyHeader" | "apiKeyQuery" | "bearer" | "basic";
+export type ToolAuthSource = "operation" | "global" | "none" | "unsupported";
+export type ToolManualReviewSeverity = "warning" | "error";
 export type RequestBodyContentKind =
     | "json-object"
     | "json-raw"
@@ -99,6 +101,75 @@ export interface GenerationPlan {
     features: GenerationFeatureFlags;
     tools: GenerationTool[];
     warnings: string[];
+}
+
+export interface ToolPlan {
+    id: string;
+    operationId?: string;
+    method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "TRACE";
+    path: string;
+    toolName: string;
+    inputSchema: Record<string, unknown>;
+    description: string;
+    authStrategy: ToolAuthPlan;
+    requestBodyStrategy: ToolRequestBodyPlan;
+    serializationStrategy: ToolSerializationPlan;
+    parameters: ToolPlanParameter[];
+    warnings: string[];
+    manualReview: ToolManualReviewFlag[];
+}
+
+export interface ToolAuthPlan {
+    strategy: AuthStrategy;
+    source: ToolAuthSource;
+    schemeName?: string;
+    apiKeyName?: string;
+    apiKeyLocation?: "header" | "query";
+    requirement?: Record<string, string[]>;
+}
+
+export interface ToolRequestBodyPlan {
+    required: boolean;
+    contentType?: string;
+    contentKind?: RequestBodyContentKind;
+    schema?: Record<string, unknown>;
+}
+
+export interface ToolSerializationPlan {
+    path: ToolSerializedParameter[];
+    query: ToolSerializedParameter[];
+    header: ToolSerializedParameter[];
+    cookie: ToolSerializedParameter[];
+    requestBody?: {
+        contentType: string;
+        contentKind: RequestBodyContentKind;
+        parameterNames: string[];
+    };
+}
+
+export interface ToolSerializedParameter {
+    argName: string;
+    sourceName: string;
+    required: boolean;
+    style?: string;
+    explode?: boolean;
+}
+
+export interface ToolPlanParameter {
+    argName: string;
+    sourceName: string;
+    location: ParamLocation;
+    required: boolean;
+    description: string;
+    schema?: Record<string, unknown>;
+    style?: string;
+    explode?: boolean;
+}
+
+export interface ToolManualReviewFlag {
+    code: string;
+    severity: ToolManualReviewSeverity;
+    message: string;
 }
 
 export interface NormalizedAuth {

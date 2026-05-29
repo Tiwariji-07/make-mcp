@@ -6,8 +6,11 @@ import {
     type GeneratorRequest,
     type GenerationParam,
     type GeneratorToolParameter,
+    type ToolPlan,
+    type ToolPlanParameter,
 } from "./types.ts";
 import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter } from "@/lib/api-model";
+import { planToolFromOperation } from "./planner.ts";
 import {
     getBodyContentKind,
     getDefaultFeatures,
@@ -74,6 +77,77 @@ function getCanonicalRequestMedia(operation: ApiOperation | undefined, preferred
         || operation.requestBody.content[0];
 }
 
+function getTypeFromSchema(schema?: Record<string, unknown>): string {
+    if (!schema) return "string";
+    if (schema.type === "array") return "array";
+    if (schema.type === "object" || schema.properties) return "object";
+    return typeof schema.type === "string" ? schema.type : "string";
+}
+
+function findConfiguredParameter(
+    planParameter: ToolPlanParameter,
+    configuredParameters: GeneratorToolParameter[]
+): GeneratorToolParameter | undefined {
+    return configuredParameters.find((parameter) =>
+        parameter.location === planParameter.location &&
+        (
+            parameter.originalName === planParameter.sourceName ||
+            parameter.name === planParameter.sourceName ||
+            parameter.name === planParameter.argName
+        )
+    );
+}
+
+function toGenerationToolFromToolPlan(
+    toolPlan: ToolPlan,
+    tool: GeneratorRequest["tools"][number],
+    warnings: string[]
+): GenerationTool {
+    const seenArgs = new Set<string>();
+    const params: GenerationParam[] = toolPlan.parameters.map((parameter, parameterIndex) => {
+        const configuredParameter = findConfiguredParameter(parameter, tool.parameters);
+        const desired = configuredParameter?.name || parameter.argName;
+        const argName = makeUniqueIdentifier(desired, seenArgs, `param_${parameterIndex + 1}`);
+
+        if (argName !== desired) {
+            warnings.push(`Normalized parameter "${desired}" to "${argName}" for ${toolPlan.toolName}`);
+        }
+
+        return {
+            argName,
+            sourceName: parameter.sourceName,
+            type: configuredParameter?.type || getTypeFromSchema(parameter.schema),
+            required: parameter.required,
+            description: configuredParameter?.description || parameter.description,
+            location: parameter.location,
+            schema: parameter.schema,
+        };
+    });
+    const bodyParams = params.filter((param) => param.location === "body");
+    const requestBody = toolPlan.requestBodyStrategy.contentKind
+        ? {
+            contentType: toolPlan.requestBodyStrategy.contentType || "application/json",
+            contentKind: toolPlan.requestBodyStrategy.contentKind,
+            schema: toolPlan.requestBodyStrategy.schema,
+            params: bodyParams,
+        }
+        : undefined;
+
+    warnings.push(...toolPlan.warnings);
+    warnings.push(...toolPlan.manualReview.map((flag) => flag.message));
+
+    return {
+        id: toolPlan.id,
+        displayName: toolPlan.toolName,
+        functionName: makeUniqueIdentifier(toolPlan.toolName, new Set<string>(), "tool"),
+        description: toolPlan.description,
+        method: toolPlan.method as GenerationTool["method"],
+        path: toolPlan.path,
+        params,
+        requestBody,
+    };
+}
+
 function normalizeTool(
     tool: GeneratorRequest["tools"][number],
     toolIndex: number,
@@ -81,6 +155,25 @@ function normalizeTool(
     apiModel?: ApiModel
 ): GenerationTool {
     const canonicalOperation = getCanonicalOperation(apiModel, tool.endpointId);
+    if (apiModel && canonicalOperation) {
+        const displayName = tool.toolName.trim() || `tool_${toolIndex + 1}`;
+
+        if (displayName !== tool.toolName) {
+            warnings.push(`Trimmed empty or padded tool name for ${tool.endpointId}`);
+        }
+
+        return toGenerationToolFromToolPlan(
+            planToolFromOperation(apiModel, canonicalOperation, {
+                toolName: displayName,
+                description: tool.description,
+                preferredContentType: tool.bodyContentType,
+                index: toolIndex,
+            }),
+            tool,
+            warnings
+        );
+    }
+
     const parsedEndpoint = parseEndpointId(tool.endpointId);
     const method = canonicalOperation?.method || parsedEndpoint.method;
     const path = canonicalOperation?.path || parsedEndpoint.path;

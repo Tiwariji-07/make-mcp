@@ -78,6 +78,8 @@ export type {
     GeneratedProject,
     GeneratedPreviewResponse,
     GeneratorRequest,
+    ToolPlan,
     ValidationResult,
     VerificationReport,
 } from "./types.ts";
+export { buildToolPlans, planToolFromOperation } from "./planner.ts";
