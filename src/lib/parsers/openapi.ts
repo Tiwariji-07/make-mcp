@@ -1,8 +1,8 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
-import { ParsedSpec } from "@/store/project-store";
-import { buildOpenAPIModel } from "@/lib/api-model";
-import type { OpenAPISpec } from "@/lib/api-model/openapi";
-import { apiModelToParsedSpec } from "@/lib/api-model/legacy";
+import type { ParsedSpec } from "../../store/project-store";
+import { buildOpenAPIModel } from "../api-model/openapi.ts";
+import type { OpenAPISpec } from "../api-model/openapi.ts";
+import { apiModelToParsedSpec } from "../api-model/legacy.ts";
 
 // Parse OpenAPI/Swagger spec
 export async function parseOpenAPISpec(input: string | object): Promise<ParsedSpec> {
@@ -32,7 +32,7 @@ export async function parseOpenAPIFromContent(content: string, filename: string)
         }
 
         // Detect format and parse accordingly
-        const { isPostmanCollection, parsePostmanCollection } = await import("./postman");
+        const { isPostmanCollection, parsePostmanCollection } = await import("./postman.ts");
 
         if (isPostmanCollection(parsed)) {
             const spec = parsePostmanCollection(parsed);

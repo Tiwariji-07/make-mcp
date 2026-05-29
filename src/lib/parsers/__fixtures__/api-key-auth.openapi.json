@@ -1,0 +1,56 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "API Key Auth API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://keys.acme.test"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "headerKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key"
+      },
+      "queryKey": {
+        "type": "apiKey",
+        "in": "query",
+        "name": "api_key"
+      }
+    }
+  },
+  "paths": {
+    "/reports": {
+      "get": {
+        "operationId": "listReports",
+        "summary": "List reports",
+        "security": [
+          {
+            "headerKey": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Reports returned"
+          }
+        }
+      }
+    },
+    "/public-status": {
+      "get": {
+        "operationId": "getPublicStatus",
+        "summary": "Get public status",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Status returned"
+          }
+        }
+      }
+    }
+  }
+}

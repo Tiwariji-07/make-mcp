@@ -1,0 +1,76 @@
+{
+  "info": {
+    "name": "Folder Auth Postman",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://folder-auth.acme.test"
+    },
+    {
+      "key": "token",
+      "value": "redacted"
+    }
+  ],
+  "auth": {
+    "type": "apikey",
+    "apikey": [
+      {
+        "key": "in",
+        "value": "header"
+      },
+      {
+        "key": "key",
+        "value": "X-Collection-Key"
+      },
+      {
+        "key": "value",
+        "value": "{{collectionKey}}"
+      }
+    ]
+  },
+  "item": [
+    {
+      "name": "Admin",
+      "auth": {
+        "type": "bearer",
+        "bearer": [
+          {
+            "key": "token",
+            "value": "{{token}}"
+          }
+        ]
+      },
+      "item": [
+        {
+          "name": "List Admin Users",
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/admin/users",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{token}}"
+              },
+              {
+                "key": "X-Trace-Id",
+                "value": "trace_123"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Public Ping",
+      "request": {
+        "method": "GET",
+        "url": "{{baseUrl}}/ping",
+        "auth": {
+          "type": "noauth"
+        }
+      }
+    }
+  ]
+}

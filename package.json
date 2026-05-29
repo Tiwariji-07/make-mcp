@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test:generator": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/generator/**/*.test.ts"
+    "test:generator": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/generator/**/*.test.ts src/lib/parsers/**/*.test.ts"
   },
   "dependencies": {
     "@apidevtools/swagger-parser": "^12.1.0",

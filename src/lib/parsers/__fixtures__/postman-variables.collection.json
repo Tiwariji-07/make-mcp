@@ -1,0 +1,49 @@
+{
+  "info": {
+    "name": "Acme Orders Postman",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "version": "2.1.0"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "https://postman.acme.test"
+    },
+    {
+      "key": "version",
+      "value": "v2"
+    },
+    {
+      "key": "tenant",
+      "value": "acme"
+    }
+  ],
+  "item": [
+    {
+      "name": "Get Order",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{baseUrl}}/{{version}}/orders/:orderId?include=items&tenant={{tenant}}",
+          "path": [
+            "{{version}}",
+            "orders",
+            ":orderId"
+          ],
+          "query": [
+            {
+              "key": "expand",
+              "value": "customer"
+            }
+          ],
+          "variable": [
+            {
+              "key": "orderId",
+              "value": "ord_123"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Projects API",
+    "version": "1.2.0"
+  },
+  "servers": [
+    {
+      "url": "https://projects.acme.test"
+    }
+  ],
+  "paths": {
+    "/orgs/{orgId}/projects/{projectId}": {
+      "parameters": [
+        {
+          "name": "orgId",
+          "in": "path",
+          "required": true,
+          "description": "Organization id.",
+          "schema": {
+            "type": "string"
+          }
+        },
+        {
+          "name": "projectId",
+          "in": "path",
+          "required": true,
+          "description": "Project id.",
+          "schema": {
+            "type": "string"
+          }
+        }
+      ],
+      "get": {
+        "operationId": "getProject",
+        "summary": "Get project",
+        "parameters": [
+          {
+            "name": "include",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "members",
+                "settings"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project returned"
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteProject",
+        "summary": "Delete project",
+        "responses": {
+          "204": {
+            "description": "Project deleted"
+          }
+        }
+      }
+    }
+  }
+}

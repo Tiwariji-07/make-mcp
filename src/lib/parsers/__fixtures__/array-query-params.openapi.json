@@ -1,0 +1,53 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Search API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://search.acme.test"
+    }
+  ],
+  "paths": {
+    "/search": {
+      "get": {
+        "operationId": "searchCatalog",
+        "summary": "Search catalog",
+        "parameters": [
+          {
+            "name": "tags",
+            "in": "query",
+            "description": "Repeated tag filters.",
+            "style": "form",
+            "explode": true,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "name": "ids",
+            "in": "query",
+            "description": "Comma-separated identifiers.",
+            "style": "form",
+            "explode": false,
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "integer"
+              }
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Results returned"
+          }
+        }
+      }
+    }
+  }
+}

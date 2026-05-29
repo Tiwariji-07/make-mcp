@@ -1,0 +1,39 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Bearer Auth API",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://secure.acme.test"
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "paths": {
+    "/me": {
+      "get": {
+        "operationId": "getCurrentUser",
+        "summary": "Get current user",
+        "responses": {
+          "200": {
+            "description": "Profile returned"
+          }
+        }
+      }
+    }
+  }
+}

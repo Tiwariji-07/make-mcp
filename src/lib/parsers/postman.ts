@@ -1,6 +1,6 @@
-import { ParsedSpec } from "@/store/project-store";
-import { buildPostmanApiModel, type PostmanBuildOptions, type PostmanCollection } from "@/lib/api-model";
-import { apiModelToParsedSpec } from "@/lib/api-model/legacy";
+import type { ParsedSpec } from "../../store/project-store";
+import { buildPostmanApiModel, type PostmanBuildOptions, type PostmanCollection } from "../api-model/postman.ts";
+import { apiModelToParsedSpec } from "../api-model/legacy.ts";
 
 // Check if content is a Postman Collection
 export function isPostmanCollection(content: unknown): content is PostmanCollection {

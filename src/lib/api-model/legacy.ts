@@ -1,4 +1,4 @@
-import type { ParsedEndpoint, ParsedParameter, ParsedSpec } from "@/store/project-store";
+import type { ParsedEndpoint, ParsedParameter, ParsedSpec } from "../../store/project-store";
 import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter, ApiSchema } from "./types";
 
 export function getTypeFromApiSchema(schema?: ApiSchema): string {
