@@ -118,14 +118,6 @@ function getFileContent(preview: ReturnType<typeof createPreviewResponse>, fileN
     return file.content;
 }
 
-function extractBlock(source: string, start: string, end: string): string {
-    const startIndex = source.indexOf(start);
-    const endIndex = source.indexOf(end, startIndex);
-    assert.notEqual(startIndex, -1, `Expected block start ${start}`);
-    assert.notEqual(endIndex, -1, `Expected block end ${end}`);
-    return source.slice(startIndex, endIndex);
-}
-
 type NodeSerializationHelpers = {
     serializePathParameter: (name: string, value: unknown, options: Record<string, unknown>) => string;
     appendSerializedParameter: (
@@ -165,10 +157,8 @@ function nodeQueryString(
     return params.toString();
 }
 
-function runPythonSerializationCases(serverFile: string): Record<string, string> {
-    const helperSource = extractBlock(serverFile, "def default_parameter_style", "def get_headers");
-    const script = `from urllib.parse import quote
-${helperSource}
+function runPythonSerializationCases(serializationFile: string): Record<string, string> {
+    const script = `${serializationFile}
 import json
 
 def query_string(name, value, options):
@@ -252,11 +242,19 @@ test("openapi -> python preview matches golden contract", () => {
     assert.equal(preview.manifest.language, "python");
     assert.equal(preview.verification?.status, "passed");
     assert.ok(preview.files.some((file) => file.name === "tests/test_manifest.py"));
+    assert.ok(preview.files.some((file) => file.name === "src/config.py"));
+    assert.ok(preview.files.some((file) => file.name === "src/api_client.py"));
+    assert.ok(preview.files.some((file) => file.name === "src/operations.py"));
+    assert.ok(preview.files.some((file) => file.name === "src/serialization.py"));
 
+    const pyprojectFile = getFileContent(preview, "pyproject.toml");
     const serverFile = getFileContent(preview, "src/server.py");
+    const apiClientFile = getFileContent(preview, "src/api_client.py");
+    const operationsFile = getFileContent(preview, "src/operations.py");
+    assert.match(pyprojectFile, /"fastmcp==3\.3\.1"/);
     assert.match(serverFile, /@mcp\.tool\(name="create-customer"\)/);
-    assert.match(serverFile, /headers\["x-api-key"\] = API_KEY/);
-    assert.match(serverFile, /json_body\["accountId"\] = account_id/);
+    assert.match(apiClientFile, /headers\["x-api-key"\] = API_KEY/);
+    assert.match(operationsFile, /json_body\["accountId"\] = account_id/);
 });
 
 test("node preview keeps complex json bodies as a single body argument", () => {
@@ -374,8 +372,12 @@ test("postman -> python preview preserves tool name and stdio transport", () => 
     assert.equal(preview.manifest.language, "python");
     assert.equal(preview.manifest.features.documentation, false);
     const serverFile = getFileContent(preview, "src/server.py");
+    const apiClientFile = getFileContent(preview, "src/api_client.py");
+    const operationsFile = getFileContent(preview, "src/operations.py");
     assert.match(serverFile, /@mcp\.tool\(name="get-order"\)/);
     assert.match(serverFile, /mcp\.run\(transport="stdio"\)/);
+    assert.match(apiClientFile, /Authorization"\] = f"Bearer \{BEARER_TOKEN\}"/);
+    assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serialize_path_parameter\("orderId", order_id/);
 });
 
 test("previews serialize OpenAPI path, query, header, and cookie parameters with style metadata", () => {
@@ -498,12 +500,12 @@ test("previews serialize OpenAPI path, query, header, and cookie parameters with
             },
         },
     });
-    const serverFile = getFileContent(pythonPreview, "src/server.py");
-    assert.match(serverFile, /serialize_path_parameter\("ids", ids, \{ "location": "path", "style": "simple", "explode": False \}\)/);
-    assert.match(serverFile, /append_serialized_parameter\(params, "filter", filter, \{ "location": "query", "style": "deepObject", "explode": True \}\)/);
-    assert.match(serverFile, /append_serialized_parameter\(params, "tags", tags, \{ "location": "query", "style": "pipeDelimited", "explode": False \}\)/);
-    assert.match(serverFile, /request_headers\["X-Fields"\] = serialize_parameter_value\("X-Fields", X_Fields, \{ "location": "header", "style": "simple", "explode": False \}\)/);
-    assert.match(serverFile, /cookies\["prefs"\] = serialize_parameter_value\("prefs", prefs, \{ "location": "cookie", "style": "form", "explode": False \}\)/);
+    const operationsFile = getFileContent(pythonPreview, "src/operations.py");
+    assert.match(operationsFile, /serialize_path_parameter\("ids", ids, \{ "location": "path", "style": "simple", "explode": False \}\)/);
+    assert.match(operationsFile, /append_serialized_parameter\(params, "filter", filter, \{ "location": "query", "style": "deepObject", "explode": True \}\)/);
+    assert.match(operationsFile, /append_serialized_parameter\(params, "tags", tags, \{ "location": "query", "style": "pipeDelimited", "explode": False \}\)/);
+    assert.match(operationsFile, /request_headers\["X-Fields"\] = serialize_parameter_value\("X-Fields", X_Fields, \{ "location": "header", "style": "simple", "explode": False \}\)/);
+    assert.match(operationsFile, /cookies\["prefs"\] = serialize_parameter_value\("prefs", prefs, \{ "location": "cookie", "style": "form", "explode": False \}\)/);
 });
 
 test("generated serialization helpers produce golden OpenAPI array and object encodings", () => {
@@ -598,7 +600,7 @@ test("generated serialization helpers produce golden OpenAPI array and object en
             },
         },
     });
-    const pythonCases = runPythonSerializationCases(getFileContent(pythonPreview, "src/server.py"));
+    const pythonCases = runPythonSerializationCases(getFileContent(pythonPreview, "src/serialization.py"));
     assert.deepEqual(pythonCases, {
         form_array_explode: "tags=a&tags=b",
         form_object_explode: "role=admin&active=true",
@@ -780,10 +782,10 @@ test("previews render multipart binary fields as file uploads", () => {
             },
         },
     });
-    const serverFile = getFileContent(pythonPreview, "src/server.py");
-    assert.match(serverFile, /import base64/);
-    assert.match(serverFile, /multipart_files\["file"\] = \("file", base64\.b64decode\(file\), "application\/octet-stream"\)/);
-    assert.match(serverFile, /multipart_files\["label"\] = \(None, str\(label\)\)/);
+    const operationsFile = getFileContent(pythonPreview, "src/operations.py");
+    assert.match(operationsFile, /import base64/);
+    assert.match(operationsFile, /multipart_files\["file"\] = \("file", base64\.b64decode\(file\), "application\/octet-stream"\)/);
+    assert.match(operationsFile, /multipart_files\["label"\] = \(None, str\(label\)\)/);
 });
 
 test("node sse preview exposes message endpoint and per-session server", () => {

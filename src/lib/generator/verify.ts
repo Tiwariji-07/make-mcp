@@ -62,7 +62,15 @@ function verifyProjectShape(project: GeneratedProject): VerificationCheck {
             "src/api/serialization.ts",
             "makemcp.manifest.json",
         ]
-        : ["pyproject.toml", "src/server.py", "makemcp.manifest.json"];
+        : [
+            "pyproject.toml",
+            "src/server.py",
+            "src/config.py",
+            "src/api_client.py",
+            "src/operations.py",
+            "src/serialization.py",
+            "makemcp.manifest.json",
+        ];
 
     const missing = requiredFiles.filter((filePath) => !project.files.has(filePath));
     if (missing.length > 0) {
@@ -218,11 +226,60 @@ function verifyNodeProject(project: GeneratedProject): VerificationCheck {
     }
 }
 
+function createPythonImportStubs(tempDir: string) {
+    const srcDir = join(tempDir, "src");
+
+    writeFileSync(join(srcDir, "fastmcp.py"), `class FastMCP:
+    def __init__(self, name):
+        self.name = name
+
+    def tool(self, *args, **kwargs):
+        def decorator(function):
+            return function
+        return decorator
+
+    def run(self, *args, **kwargs):
+        return None
+`, "utf8");
+
+    writeFileSync(join(srcDir, "httpx.py"), `class Response:
+    headers = {}
+    text = ""
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return {}
+
+
+class Client:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def request(self, *args, **kwargs):
+        return Response()
+`, "utf8");
+
+    writeFileSync(join(srcDir, "dotenv.py"), `def load_dotenv(*args, **kwargs):
+    return True
+`, "utf8");
+}
+
 function verifyPythonProject(project: GeneratedProject): VerificationCheck {
     const tempDir = writeProjectToTempDir(project);
     const pythonFiles = Array.from(project.files.keys()).filter((filePath) => filePath.endsWith(".py"));
 
     try {
+        const pyproject = project.files.get("pyproject.toml") || "";
+        if (!/["']fastmcp==\d+\.\d+\.\d+["']/.test(pyproject)) {
+            return {
+                name: "python-generated-project",
+                status: "failed",
+                details: "Generated pyproject.toml must pin fastmcp to an exact version",
+            };
+        }
+
         const pythonBinary = existsSync("/usr/bin/python3") ? "/usr/bin/python3" : "python3";
         const result = spawnSync(pythonBinary, [
             "-c",
@@ -251,6 +308,35 @@ function verifyPythonProject(project: GeneratedProject): VerificationCheck {
                 name: "python-generated-project",
                 status: "failed",
                 details: result.stderr || result.stdout || "Generated Python project failed verification",
+            };
+        }
+
+        createPythonImportStubs(tempDir);
+        const importResult = spawnSync(pythonBinary, [
+            "-c",
+            [
+                "import sys",
+                "sys.path.insert(0, 'src')",
+                "import server",
+            ].join("\n"),
+        ], {
+            cwd: tempDir,
+            encoding: "utf8",
+        });
+
+        if (importResult.error) {
+            return {
+                name: "python-generated-project",
+                status: "skipped",
+                details: importResult.error.message,
+            };
+        }
+
+        if (importResult.status !== 0) {
+            return {
+                name: "python-generated-project",
+                status: "failed",
+                details: importResult.stderr || importResult.stdout || "Generated Python project failed import smoke test",
             };
         }
 
