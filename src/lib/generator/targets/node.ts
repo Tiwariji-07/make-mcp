@@ -4,8 +4,9 @@ import type {
     GenerationPlan,
     GenerationRequestBody,
     GenerationTool,
+    ToolAuthRequirementPlan,
 } from "../types.ts";
-import { getAuthEnvironmentExample, getNodeAuthStrategy } from "../strategies/auth.ts";
+import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getNodeTransportStrategy } from "../strategies/transport.ts";
 import { toJsStringLiteral } from "../utils.ts";
 import { toZodType } from "../schema.ts";
@@ -29,7 +30,21 @@ function buildManifest(plan: GenerationPlan): GeneratedManifest {
 }
 
 function getEnvExample(plan: GenerationPlan): string {
-    return `# Base URL for the API\nAPI_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}\n${getAuthEnvironmentExample(plan.auth)}`;
+    const authSchemes = collectAuthSchemes(plan);
+    const lines = [`# Base URL for the API`, `API_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}`];
+
+    if (authSchemes.length > 0) {
+        lines.push("", "# Auth");
+    }
+
+    for (const auth of authSchemes) {
+        if (auth.apiKeyEnvVar) lines.push(`${auth.apiKeyEnvVar}=your_api_key_here`);
+        if (auth.bearerTokenEnvVar) lines.push(`${auth.bearerTokenEnvVar}=your_token_here`);
+        if (auth.basicUsernameEnvVar) lines.push(`${auth.basicUsernameEnvVar}=your_username`);
+        if (auth.basicPasswordEnvVar) lines.push(`${auth.basicPasswordEnvVar}=your_password`);
+    }
+
+    return `${lines.join("\n")}\n`;
 }
 
 function getNodeBodyExpression(requestBody: GenerationRequestBody): string {
@@ -130,6 +145,19 @@ function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
     }
 }
 
+function renderNodeAuthRequirements(requirements?: ToolAuthRequirementPlan[]): string {
+    if (!requirements?.length) return "[]";
+
+    const renderedRequirements = requirements.map((requirement) => {
+        const schemes = requirement.schemes
+            .map((scheme) => `AUTH_SCHEMES[${JSON.stringify(getAuthSchemeKey(scheme))}]`)
+            .join(", ");
+        return `{ schemes: [${schemes}] }`;
+    });
+
+    return `[\n    ${renderedRequirements.join(",\n    ")}\n  ]`;
+}
+
 function renderNodeOperation(tool: GenerationTool): string {
     const pathParams = tool.params.filter((param) => param.location === "path");
     const queryParams = tool.params.filter((param) => param.location === "query");
@@ -159,11 +187,10 @@ function renderNodeOperation(tool: GenerationTool): string {
     return `async function(args: Record<string, unknown>): Promise<string> {
   let path = ${JSON.stringify(tool.path)};
 ${pathReplacements ? `${pathReplacements}\n` : ""}  const queryString = new URLSearchParams();
-${queryLines ? `${queryLines}\n` : ""}  applyAuthQuery(queryString);
-
-  const requestHeaders: Record<string, string> = {};
+${queryLines ? `${queryLines}\n` : ""}  const requestHeaders: Record<string, string> = {};
   const cookiePairs: string[] = [];
-${headerLines ? `${headerLines}\n` : ""}${cookieLines ? `${cookieLines}\n` : ""}${bodySetup}${bodyHeaderLines ? `${bodyHeaderLines}\n` : ""}  if (cookiePairs.length > 0) {
+${headerLines ? `${headerLines}\n` : ""}${cookieLines ? `${cookieLines}\n` : ""}${bodySetup}${bodyHeaderLines ? `${bodyHeaderLines}\n` : ""}  applyAuth(queryString, requestHeaders, cookiePairs, ${renderNodeAuthRequirements(tool.authStrategy.requirements)});
+  if (cookiePairs.length > 0) {
     requestHeaders["Cookie"] = cookiePairs.join("; ");
   }
 
@@ -237,17 +264,28 @@ main().catch(console.error);
 }
 
 function renderConfig(plan: GenerationPlan): string {
-    const authStrategy = getNodeAuthStrategy(plan.auth);
-    const authDeclarations = authStrategy.envDeclarations
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => `export ${line}`)
-        .join("\n");
+    const authSchemes = collectAuthSchemes(plan);
+    const authSchemeEntries = authSchemes.map((auth) => {
+        const scheme = auth.scheme;
+
+        if (scheme.strategy === "apiKeyHeader" || scheme.strategy === "apiKeyQuery" || scheme.strategy === "apiKeyCookie") {
+            return `  ${JSON.stringify(auth.key)}: { type: "apiKey", in: ${JSON.stringify(scheme.apiKeyLocation || "header")}, name: ${JSON.stringify(scheme.apiKeyName || "X-API-Key")}, value: process.env.${auth.apiKeyEnvVar} || "" },`;
+        }
+
+        if (scheme.strategy === "bearer") {
+            return `  ${JSON.stringify(auth.key)}: { type: "bearer", token: process.env.${auth.bearerTokenEnvVar} || "" },`;
+        }
+
+        return `  ${JSON.stringify(auth.key)}: { type: "basic", username: process.env.${auth.basicUsernameEnvVar} || "", password: process.env.${auth.basicPasswordEnvVar} || "" },`;
+    }).join("\n");
 
     return `import "dotenv/config";
 
 export const API_BASE_URL = process.env.API_BASE_URL || ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")};
-${authDeclarations ? `${authDeclarations}\n` : ""}
+export const AUTH_SCHEMES = {
+${authSchemeEntries}
+} as const;
+
 export const MCP_SERVER_CONFIG = {
   name: ${JSON.stringify(plan.server.name)},
   version: ${JSON.stringify(plan.server.version)},
@@ -257,24 +295,8 @@ export const MCP_SERVER_CONFIG = {
 `;
 }
 
-function renderNodeAuthImports(plan: GenerationPlan): string {
-    switch (plan.auth.strategy) {
-        case "apiKeyHeader":
-        case "apiKeyQuery":
-            return "import { API_BASE_URL, API_KEY } from \"../config.js\";";
-        case "bearer":
-            return "import { API_BASE_URL, BEARER_TOKEN } from \"../config.js\";";
-        case "basic":
-            return "import { API_BASE_URL, BASIC_PASSWORD, BASIC_USERNAME } from \"../config.js\";";
-        default:
-            return "import { API_BASE_URL } from \"../config.js\";";
-    }
-}
-
-function renderClient(plan: GenerationPlan): string {
-    const authStrategy = getNodeAuthStrategy(plan.auth);
-
-    return `${renderNodeAuthImports(plan)}
+function renderClient(): string {
+    return `import { API_BASE_URL } from "../config.js";
 
 export type ApiRequest = {
   path: string;
@@ -284,13 +306,61 @@ export type ApiRequest = {
   body?: BodyInit;
 };
 
-export function applyAuthQuery(queryString: URLSearchParams) {
-${authStrategy.applyQuery ? authStrategy.applyQuery.replaceAll("      ", "  ") : "  void queryString;"}
+export type AuthScheme =
+  | { type: "apiKey"; in: "header" | "query" | "cookie"; name: string; value: string }
+  | { type: "bearer"; token: string }
+  | { type: "basic"; username: string; password: string };
+
+export type AuthRequirement = {
+  schemes: readonly AuthScheme[];
+};
+
+function isAuthSchemeConfigured(scheme: AuthScheme): boolean {
+  if (scheme.type === "apiKey") return Boolean(scheme.value);
+  if (scheme.type === "bearer") return Boolean(scheme.token);
+  return Boolean(scheme.username || scheme.password);
 }
 
-export function getHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-${authStrategy.applyHeaders ? `${authStrategy.applyHeaders}\n` : ""}  return headers;
+function isAuthRequirementConfigured(requirement: AuthRequirement): boolean {
+  return requirement.schemes.every(isAuthSchemeConfigured);
+}
+
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const normalizedName = name.toLowerCase();
+  return Object.keys(headers).some((headerName) => headerName.toLowerCase() === normalizedName);
+}
+
+function hasCookie(cookiePairs: string[], name: string): boolean {
+  const prefix = \`\${encodeURIComponent(name)}=\`;
+  return cookiePairs.some((cookie) => cookie.startsWith(prefix));
+}
+
+export function applyAuth(
+  queryString: URLSearchParams,
+  headers: Record<string, string>,
+  cookiePairs: string[],
+  authRequirements: readonly AuthRequirement[]
+) {
+  const requirement = authRequirements.find(isAuthRequirementConfigured);
+  if (!requirement) return;
+
+  for (const scheme of requirement.schemes) {
+    if (!isAuthSchemeConfigured(scheme)) continue;
+
+    if (scheme.type === "apiKey") {
+      if (scheme.in === "query" && !queryString.has(scheme.name)) {
+        queryString.append(scheme.name, scheme.value);
+      } else if (scheme.in === "cookie" && !hasCookie(cookiePairs, scheme.name)) {
+        cookiePairs.push(\`\${encodeURIComponent(scheme.name)}=\${encodeURIComponent(scheme.value)}\`);
+      } else if (scheme.in === "header" && !hasHeader(headers, scheme.name)) {
+        headers[scheme.name] = scheme.value;
+      }
+    } else if (scheme.type === "bearer" && !hasHeader(headers, "Authorization")) {
+      headers["Authorization"] = \`Bearer \${scheme.token}\`;
+    } else if (scheme.type === "basic" && !hasHeader(headers, "Authorization")) {
+      headers["Authorization"] = \`Basic \${Buffer.from(\`\${scheme.username}:\${scheme.password}\`).toString("base64")}\`;
+    }
+  }
 }
 
 export async function executeApiRequest(request: ApiRequest): Promise<string> {
@@ -301,7 +371,7 @@ export async function executeApiRequest(request: ApiRequest): Promise<string> {
 
   const response = await fetch(url, {
     method: request.method,
-    headers: { ...getHeaders(), ...request.headers },
+    headers: request.headers,
     body: request.body,
   });
 
@@ -453,7 +523,8 @@ export function appendSerializedParameter(
 }
 
 function renderOperations(plan: GenerationPlan): string {
-    return `import { applyAuthQuery, executeApiRequest } from "./client.js";
+    return `import { AUTH_SCHEMES } from "../config.js";
+import { applyAuth, executeApiRequest } from "./client.js";
 import {
   appendSerializedParameter,
   serializeParameterValue,
@@ -633,7 +704,7 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     files.set("src/index.ts", renderIndex(plan));
     files.set("src/config.ts", renderConfig(plan));
     files.set("src/mcp/server.ts", renderServer(plan));
-    files.set("src/api/client.ts", renderClient(plan));
+    files.set("src/api/client.ts", renderClient());
     files.set("src/api/operations.ts", renderOperations(plan));
     files.set("src/api/serialization.ts", renderSerialization());
     files.set("makemcp.manifest.json", JSON.stringify(manifest, null, 2));

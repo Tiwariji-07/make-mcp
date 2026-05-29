@@ -31,7 +31,7 @@ const authSchema = z.discriminatedUnion("type", [
         type: z.literal("apiKey"),
         apiKey: z.object({
             name: z.string().trim().min(1),
-            in: z.enum(["header", "query"]),
+            in: z.enum(["header", "query", "cookie"]),
         }),
     }),
     z.object({ type: z.literal("bearer") }),

@@ -128,6 +128,15 @@ type NodeSerializationHelpers = {
     ) => void;
 };
 
+type NodeAuthHelpers = {
+    applyAuth: (
+        params: URLSearchParams,
+        headers: Record<string, string>,
+        cookies: string[],
+        requirements: Array<{ schemes: Record<string, unknown>[] }>
+    ) => void;
+};
+
 function loadNodeSerializationHelpers(serializationFile: string): NodeSerializationHelpers {
     const output = ts.transpileModule(`${serializationFile}
 (globalThis as any).__serializationHelpers = { serializePathParameter, appendSerializedParameter };`, {
@@ -144,6 +153,26 @@ function loadNodeSerializationHelpers(serializationFile: string): NodeSerializat
 
     vm.runInNewContext(output, context);
     return context.__serializationHelpers as NodeSerializationHelpers;
+}
+
+function loadNodeAuthHelpers(clientFile: string): NodeAuthHelpers {
+    const source = clientFile.replace('import { API_BASE_URL } from "../config.js";', 'const API_BASE_URL = "https://example.com";');
+    const output = ts.transpileModule(`${source}
+(globalThis as any).__authHelpers = { applyAuth };`, {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2022,
+        },
+    }).outputText;
+    const context = {
+        URLSearchParams,
+        Buffer,
+        encodeURIComponent,
+        exports: {},
+    } as Record<string, unknown>;
+
+    vm.runInNewContext(output, context);
+    return context.__authHelpers as NodeAuthHelpers;
 }
 
 function nodeQueryString(
@@ -183,6 +212,48 @@ print(json.dumps({
     return JSON.parse(execFileSync("python3", ["-c", script], { encoding: "utf8" })) as Record<string, string>;
 }
 
+function runPythonAuthCases(apiClientFile: string): Record<string, unknown> {
+    const source = apiClientFile.replace(
+        "import httpx\nfrom config import API_BASE_URL",
+        `class _Client:
+    def __init__(self, *args, **kwargs):
+        pass
+
+
+class _Httpx:
+    Client = _Client
+
+
+httpx = _Httpx()
+API_BASE_URL = "https://example.com"`
+    );
+    const script = `${source}
+import json
+
+def apply_case(requirements):
+    params = []
+    headers = {}
+    cookies = {}
+    apply_auth(params=params, headers=headers, cookies=cookies, auth_requirements=requirements)
+    return {"params": params, "headers": headers, "cookies": cookies}
+
+print(json.dumps({
+    "optional": apply_case([
+        {"schemes": []},
+        {"schemes": [{"type": "bearer", "token": "secret"}]},
+    ]),
+    "partial_and": apply_case([
+        {"schemes": [
+            {"type": "apiKey", "in": "header", "name": "X-API-Key", "value": "key"},
+            {"type": "bearer", "token": ""},
+        ]},
+    ]),
+}))
+`;
+
+    return JSON.parse(execFileSync("python3", ["-c", script], { encoding: "utf8" })) as Record<string, unknown>;
+}
+
 test("openapi -> node preview matches golden contract", () => {
     const preview = createPreviewResponse({
         ...openApiBase,
@@ -213,10 +284,14 @@ test("openapi -> node preview matches golden contract", () => {
 
     const serverFile = getFileContent(preview, "src/mcp/server.ts");
     const clientFile = getFileContent(preview, "src/api/client.ts");
+    const configFile = getFileContent(preview, "src/config.ts");
     const operationsFile = getFileContent(preview, "src/api/operations.ts");
     const indexFile = getFileContent(preview, "src/index.ts");
     assert.match(serverFile, /server\.tool\(\s*"create-customer"/);
-    assert.match(clientFile, /headers\["x-api-key"\] = API_KEY/);
+    assert.match(configFile, /"apiKey:apiKeyHeader:header:x-api-key": \{ type: "apiKey", in: "header", name: "x-api-key", value: process\.env\.API_KEY \|\| "" \}/);
+    assert.match(clientFile, /headers\[scheme\.name\] = scheme\.value/);
+    assert.match(clientFile, /hasHeader\(headers, scheme\.name\)/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["apiKey:apiKeyHeader:header:x-api-key"\]/);
     assert.match(operationsFile, /"accountId": args\["account_id"\]/);
     assert.match(indexFile, /if \(req\.method !== "POST"\)/);
     assert.match(indexFile, /const server = createServer\(\);\n    const transport = new StreamableHTTPServerTransport\(\{ sessionIdGenerator: undefined \}\);/);
@@ -250,10 +325,14 @@ test("openapi -> python preview matches golden contract", () => {
     const pyprojectFile = getFileContent(preview, "pyproject.toml");
     const serverFile = getFileContent(preview, "src/server.py");
     const apiClientFile = getFileContent(preview, "src/api_client.py");
+    const configFile = getFileContent(preview, "src/config.py");
     const operationsFile = getFileContent(preview, "src/operations.py");
     assert.match(pyprojectFile, /"fastmcp==3\.3\.1"/);
     assert.match(serverFile, /@mcp\.tool\(name="create-customer"\)/);
-    assert.match(apiClientFile, /headers\["x-api-key"\] = API_KEY/);
+    assert.match(configFile, /"apiKey:apiKeyHeader:header:x-api-key": \{"type": "apiKey", "in": "header", "name": "x-api-key", "value": os\.getenv\("API_KEY", ""\)\}/);
+    assert.match(apiClientFile, /headers\[name\] = str\(scheme\["value"\]\)/);
+    assert.match(apiClientFile, /has_header\(headers, name\)/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["apiKey:apiKeyHeader:header:x-api-key"\]/);
     assert.match(operationsFile, /json_body\["accountId"\] = account_id/);
 });
 
@@ -347,8 +426,11 @@ test("postman -> node preview preserves path and headers", () => {
 
     assert.equal(preview.manifest.language, "node");
     const clientFile = getFileContent(preview, "src/api/client.ts");
+    const configFile = getFileContent(preview, "src/config.ts");
     const operationsFile = getFileContent(preview, "src/api/operations.ts");
-    assert.match(clientFile, /Authorization"\] = `Bearer \$\{BEARER_TOKEN\}`/);
+    assert.match(configFile, /"bearer:bearer::": \{ type: "bearer", token: process\.env\.BEARER_TOKEN \|\| "" \}/);
+    assert.match(clientFile, /headers\["Authorization"\] = `Bearer \$\{scheme\.token\}`/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["bearer:bearer::"\]/);
     assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
     assert.match(operationsFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
 });
@@ -373,10 +455,13 @@ test("postman -> python preview preserves tool name and stdio transport", () => 
     assert.equal(preview.manifest.features.documentation, false);
     const serverFile = getFileContent(preview, "src/server.py");
     const apiClientFile = getFileContent(preview, "src/api_client.py");
+    const configFile = getFileContent(preview, "src/config.py");
     const operationsFile = getFileContent(preview, "src/operations.py");
     assert.match(serverFile, /@mcp\.tool\(name="get-order"\)/);
     assert.match(serverFile, /mcp\.run\(transport="stdio"\)/);
-    assert.match(apiClientFile, /Authorization"\] = f"Bearer \{BEARER_TOKEN\}"/);
+    assert.match(configFile, /"bearer:bearer::": \{"type": "bearer", "token": os\.getenv\("BEARER_TOKEN", ""\)\}/);
+    assert.match(apiClientFile, /headers\["Authorization"\] = f"Bearer \{scheme\['token'\]\}"/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["bearer:bearer::"\]/);
     assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serialize_path_parameter\("orderId", order_id/);
 });
 
@@ -506,6 +591,216 @@ test("previews serialize OpenAPI path, query, header, and cookie parameters with
     assert.match(operationsFile, /append_serialized_parameter\(params, "tags", tags, \{ "location": "query", "style": "pipeDelimited", "explode": False \}\)/);
     assert.match(operationsFile, /request_headers\["X-Fields"\] = serialize_parameter_value\("X-Fields", X_Fields, \{ "location": "header", "style": "simple", "explode": False \}\)/);
     assert.match(operationsFile, /cookies\["prefs"\] = serialize_parameter_value\("prefs", prefs, \{ "location": "cookie", "style": "form", "explode": False \}\)/);
+});
+
+test("node preview emits per-operation auth requirements and skips duplicate auth headers", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Auth API", version: "1.0.0" },
+        components: {
+            securitySchemes: {
+                bearerAuth: { type: "http", scheme: "bearer" },
+                basicAuth: { type: "http", scheme: "basic" },
+                headerKey: { type: "apiKey", in: "header", name: "X-API-Key" },
+                queryKey: { type: "apiKey", in: "query", name: "api_key" },
+                cookieKey: { type: "apiKey", in: "cookie", name: "session" },
+            },
+        },
+        security: [{ bearerAuth: [] }],
+        paths: {
+            "/global": {
+                get: {
+                    operationId: "globalAuth",
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/operation": {
+                get: {
+                    operationId: "operationAuth",
+                    security: [{ queryKey: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/public": {
+                get: {
+                    operationId: "publicOperation",
+                    security: [],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/alternatives": {
+                get: {
+                    operationId: "alternativeAuth",
+                    security: [{ cookieKey: [] }, { basicAuth: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/duplicate": {
+                get: {
+                    operationId: "duplicateHeaderAuth",
+                    security: [{ headerKey: [] }],
+                    parameters: [
+                        { name: "X-API-Key", in: "header", schema: { type: "string" } },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const preview = createPreviewResponse({
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://auth.example.com",
+            apiModel,
+        },
+        tools: apiModel.operations.map((operation) => ({
+            endpointId: operation.id,
+            enabled: true,
+            toolName: operation.operationId || operation.id,
+            description: operation.summary || operation.id,
+            parameters: [],
+        })),
+        serverConfig: {
+            name: "auth-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+
+    const configFile = getFileContent(preview, "src/config.ts");
+    const clientFile = getFileContent(preview, "src/api/client.ts");
+    const operationsFile = getFileContent(preview, "src/api/operations.ts");
+
+    assert.match(configFile, /BEARER_AUTH_TOKEN/);
+    assert.match(configFile, /QUERY_KEY_API_KEY/);
+    assert.match(configFile, /COOKIE_KEY_API_KEY/);
+    assert.match(configFile, /BASIC_AUTH_USERNAME/);
+    assert.match(clientFile, /queryString\.has\(scheme\.name\)/);
+    assert.match(clientFile, /hasCookie\(cookiePairs, scheme\.name\)/);
+    assert.match(clientFile, /hasHeader\(headers, scheme\.name\)/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["bearerAuth:bearer::"\]/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["queryKey:apiKeyQuery:query:api_key"\]/);
+    assert.match(operationsFile, /applyAuth\(queryString, requestHeaders, cookiePairs, \[\]\)/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["cookieKey:apiKeyCookie:cookie:session"\]/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["basicAuth:basic::"\]/);
+    assert.match(operationsFile, /requestHeaders\["X-API-Key"\] = serializeParameterValue\("X-API-Key", args\["X_API_Key"\]/);
+    assert.match(operationsFile, /AUTH_SCHEMES\["headerKey:apiKeyHeader:header:X-API-Key"\]/);
+});
+
+test("generated auth helpers treat anonymous alternatives as no-op and do not partially apply AND auth", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Runtime Auth API", version: "1.0.0" },
+        components: {
+            securitySchemes: {
+                bearerAuth: { type: "http", scheme: "bearer" },
+            },
+        },
+        paths: {
+            "/optional": {
+                get: {
+                    operationId: "optionalAuth",
+                    security: [{}, { bearerAuth: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const baseRequest: Omit<GeneratorRequest, "exportConfig"> = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://auth.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/optional",
+            enabled: true,
+            toolName: "optionalAuth",
+            description: "Optional auth",
+            parameters: [],
+        }],
+        serverConfig: {
+            name: "runtime-auth-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+    };
+
+    const nodePreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const nodeAuth = loadNodeAuthHelpers(getFileContent(nodePreview, "src/api/client.ts"));
+    const optionalQuery = new URLSearchParams();
+    const optionalHeaders: Record<string, string> = {};
+    const optionalCookies: string[] = [];
+    nodeAuth.applyAuth(optionalQuery, optionalHeaders, optionalCookies, [
+        { schemes: [] },
+        { schemes: [{ type: "bearer", token: "secret" }] },
+    ]);
+    assert.equal(optionalQuery.toString(), "");
+    assert.deepEqual(optionalHeaders, {});
+    assert.deepEqual(optionalCookies, []);
+
+    const partialQuery = new URLSearchParams();
+    const partialHeaders: Record<string, string> = {};
+    const partialCookies: string[] = [];
+    nodeAuth.applyAuth(partialQuery, partialHeaders, partialCookies, [{
+        schemes: [
+            { type: "apiKey", in: "header", name: "X-API-Key", value: "key" },
+            { type: "bearer", token: "" },
+        ],
+    }]);
+    assert.equal(partialQuery.toString(), "");
+    assert.deepEqual(partialHeaders, {});
+    assert.deepEqual(partialCookies, []);
+
+    const pythonPreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "python",
+            framework: "fastmcp",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const pythonCases = runPythonAuthCases(getFileContent(pythonPreview, "src/api_client.py"));
+    assert.deepEqual(pythonCases, {
+        optional: { params: [], headers: {}, cookies: {} },
+        partial_and: { params: [], headers: {}, cookies: {} },
+    });
 });
 
 test("generated serialization helpers produce golden OpenAPI array and object encodings", () => {

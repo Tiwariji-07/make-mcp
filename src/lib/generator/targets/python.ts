@@ -4,8 +4,9 @@ import type {
     GenerationPlan,
     GenerationRequestBody,
     GenerationTool,
+    ToolAuthRequirementPlan,
 } from "../types.ts";
-import { getAuthEnvironmentExample, getPythonAuthStrategy } from "../strategies/auth.ts";
+import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getPythonTransportRunLine } from "../strategies/transport.ts";
 import { toPythonStringLiteral } from "../utils.ts";
 import { toPythonType } from "../schema.ts";
@@ -33,7 +34,21 @@ function buildManifest(plan: GenerationPlan): GeneratedManifest {
 }
 
 function getEnvExample(plan: GenerationPlan): string {
-    return `# Base URL for the API\nAPI_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}\n${getAuthEnvironmentExample(plan.auth)}`;
+    const authSchemes = collectAuthSchemes(plan);
+    const lines = [`# Base URL for the API`, `API_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}`];
+
+    if (authSchemes.length > 0) {
+        lines.push("", "# Auth");
+    }
+
+    for (const auth of authSchemes) {
+        if (auth.apiKeyEnvVar) lines.push(`${auth.apiKeyEnvVar}=your_api_key_here`);
+        if (auth.bearerTokenEnvVar) lines.push(`${auth.bearerTokenEnvVar}=your_token_here`);
+        if (auth.basicUsernameEnvVar) lines.push(`${auth.basicUsernameEnvVar}=your_username`);
+        if (auth.basicPasswordEnvVar) lines.push(`${auth.basicPasswordEnvVar}=your_password`);
+    }
+
+    return `${lines.join("\n")}\n`;
 }
 
 function getPythonBodyExpression(requestBody: GenerationRequestBody): string {
@@ -135,6 +150,19 @@ function renderPythonRequestBody(requestBody?: GenerationRequestBody): {
     }
 }
 
+function renderPythonAuthRequirements(requirements?: ToolAuthRequirementPlan[]): string {
+    if (!requirements?.length) return "[]";
+
+    const renderedRequirements = requirements.map((requirement) => {
+        const schemes = requirement.schemes
+            .map((scheme) => `AUTH_SCHEMES[${JSON.stringify(getAuthSchemeKey(scheme))}]`)
+            .join(", ");
+        return `{"schemes": [${schemes}]}`;
+    });
+
+    return `[\n        ${renderedRequirements.join(",\n        ")}\n    ]`;
+}
+
 function renderPythonOperation(tool: GenerationTool): string {
     const pathParams = tool.params.filter((param) => param.location === "path");
     const queryParams = tool.params.filter((param) => param.location === "query");
@@ -174,10 +202,15 @@ function renderPythonOperation(tool: GenerationTool): string {
     return `def ${tool.functionName}_operation(${signature}) -> dict:
     path = ${JSON.stringify(tool.path)}
 ${pathReplacements ? `${pathReplacements}\n` : ""}    params: list[tuple[str, str]] = []
-${queryLines ? `${queryLines}\n` : ""}    apply_auth_query(params)
-    request_headers: dict[str, str] = {}
+${queryLines ? `${queryLines}\n` : ""}    request_headers: dict[str, str] = {}
 ${headerLines ? `${headerLines}\n` : ""}    cookies: dict[str, str] = {}
-${cookieLines ? `${cookieLines}\n` : ""}${bodyRender.setup ? `${bodyRender.setup}\n` : ""}${bodyRender.headerLines.length > 0 ? `${bodyRender.headerLines.join("\n")}\n` : ""}    response = request_api(
+${cookieLines ? `${cookieLines}\n` : ""}${bodyRender.setup ? `${bodyRender.setup}\n` : ""}${bodyRender.headerLines.length > 0 ? `${bodyRender.headerLines.join("\n")}\n` : ""}    apply_auth(
+        params=params,
+        headers=request_headers,
+        cookies=cookies,
+        auth_requirements=${renderPythonAuthRequirements(tool.authStrategy.requirements)},
+    )
+    response = request_api(
         ${requestArgs.join(",\n        ")},
     )
     return response_to_tool_result(response)
@@ -224,7 +257,20 @@ ${runLine}
 }
 
 function renderConfig(plan: GenerationPlan): string {
-    const authStrategy = getPythonAuthStrategy(plan.auth);
+    const authSchemes = collectAuthSchemes(plan);
+    const authSchemeEntries = authSchemes.map((auth) => {
+        const scheme = auth.scheme;
+
+        if (scheme.strategy === "apiKeyHeader" || scheme.strategy === "apiKeyQuery" || scheme.strategy === "apiKeyCookie") {
+            return `    ${JSON.stringify(auth.key)}: {"type": "apiKey", "in": ${JSON.stringify(scheme.apiKeyLocation || "header")}, "name": ${JSON.stringify(scheme.apiKeyName || "X-API-Key")}, "value": os.getenv(${JSON.stringify(auth.apiKeyEnvVar)}, "")},`;
+        }
+
+        if (scheme.strategy === "bearer") {
+            return `    ${JSON.stringify(auth.key)}: {"type": "bearer", "token": os.getenv(${JSON.stringify(auth.bearerTokenEnvVar)}, "")},`;
+        }
+
+        return `    ${JSON.stringify(auth.key)}: {"type": "basic", "username": os.getenv(${JSON.stringify(auth.basicUsernameEnvVar)}, ""), "password": os.getenv(${JSON.stringify(auth.basicPasswordEnvVar)}, "")},`;
+    }).join("\n");
 
     return `from __future__ import annotations
 
@@ -234,7 +280,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")})
-${authStrategy.envDeclarations ? `${authStrategy.envDeclarations}\n` : ""}
+AUTH_SCHEMES = {
+${authSchemeEntries}
+}
+
 MCP_SERVER_CONFIG = {
     "name": ${JSON.stringify(plan.server.name)},
     "version": ${JSON.stringify(plan.server.version)},
@@ -244,25 +293,68 @@ MCP_SERVER_CONFIG = {
 `;
 }
 
-function renderApiClient(plan: GenerationPlan): string {
-    const authStrategy = getPythonAuthStrategy(plan.auth);
-
+function renderApiClient(): string {
     return `from __future__ import annotations
 
+import base64
 import httpx
-from config import API_BASE_URL${renderPythonAuthImportNames(plan)}
+from config import API_BASE_URL
 
 client = httpx.Client(timeout=30.0)
 
 
-def apply_auth_query(params: list[tuple[str, str]]) -> None:
-${authStrategy.applyQuery ? authStrategy.applyQuery.replaceAll("    ", "    ") : "    return None"}
+AuthScheme = dict[str, object]
+AuthRequirement = dict[str, list[AuthScheme]]
 
 
-def get_headers() -> dict:
-    """Return HTTP headers for outbound requests."""
-    headers: dict[str, str] = {}
-${authStrategy.applyHeaders ? `${authStrategy.applyHeaders}\n` : ""}    return headers
+def is_auth_scheme_configured(scheme: AuthScheme) -> bool:
+    if scheme["type"] == "apiKey":
+        return bool(scheme.get("value"))
+    if scheme["type"] == "bearer":
+        return bool(scheme.get("token"))
+    return bool(scheme.get("username") or scheme.get("password"))
+
+
+def is_auth_requirement_configured(requirement: AuthRequirement) -> bool:
+    schemes = requirement.get("schemes", [])
+    return all(is_auth_scheme_configured(scheme) for scheme in schemes)
+
+
+def has_header(headers: dict[str, str], name: str) -> bool:
+    normalized_name = name.lower()
+    return any(header_name.lower() == normalized_name for header_name in headers)
+
+
+def apply_auth(
+    *,
+    params: list[tuple[str, str]],
+    headers: dict[str, str],
+    cookies: dict[str, str],
+    auth_requirements: list[AuthRequirement],
+) -> None:
+    requirement = next((entry for entry in auth_requirements if is_auth_requirement_configured(entry)), None)
+    if requirement is None:
+        return
+
+    for scheme in requirement.get("schemes", []):
+        if not is_auth_scheme_configured(scheme):
+            continue
+
+        if scheme["type"] == "apiKey":
+            name = str(scheme["name"])
+            if scheme["in"] == "query" and not any(param_name == name for param_name, _ in params):
+                params.append((name, str(scheme["value"])))
+            elif scheme["in"] == "cookie" and name not in cookies:
+                cookies[name] = str(scheme["value"])
+            elif scheme["in"] == "header" and not has_header(headers, name):
+                headers[name] = str(scheme["value"])
+        elif scheme["type"] == "bearer" and not has_header(headers, "Authorization"):
+            headers["Authorization"] = f"Bearer {scheme['token']}"
+        elif scheme["type"] == "basic" and not has_header(headers, "Authorization"):
+            username = str(scheme.get("username", ""))
+            password = str(scheme.get("password", ""))
+            token = base64.b64encode(f"{username}:{password}".encode()).decode()
+            headers["Authorization"] = f"Basic {token}"
 
 
 def request_api(
@@ -278,7 +370,7 @@ def request_api(
     return client.request(
         method=method,
         url=f"{API_BASE_URL}{path}",
-        headers={**get_headers(), **headers},
+        headers=headers,
         params=params,
         cookies=cookies,
         **request_kwargs,
@@ -291,20 +383,6 @@ def response_to_tool_result(response: httpx.Response) -> dict:
         return response.json()
     return {"text": response.text}
 `;
-}
-
-function renderPythonAuthImportNames(plan: GenerationPlan): string {
-    switch (plan.auth.strategy) {
-        case "apiKeyHeader":
-        case "apiKeyQuery":
-            return ", API_KEY";
-        case "bearer":
-            return ", BEARER_TOKEN";
-        case "basic":
-            return ", BASIC_PASSWORD, BASIC_USERNAME";
-        default:
-            return "";
-    }
 }
 
 function renderSerialization(): string {
@@ -441,7 +519,8 @@ function renderOperations(plan: GenerationPlan): string {
 
     return `from __future__ import annotations
 
-${needsBase64 ? "import base64\n" : ""}from api_client import apply_auth_query, request_api, response_to_tool_result
+${needsBase64 ? "import base64\n" : ""}from api_client import apply_auth, request_api, response_to_tool_result
+from config import AUTH_SCHEMES
 from serialization import (
     append_serialized_parameter,
     serialize_parameter_value,
@@ -562,7 +641,7 @@ build-backend = "hatchling.build"
     files.set(".env.example", getEnvExample(plan));
     files.set("src/server.py", renderServer(plan));
     files.set("src/config.py", renderConfig(plan));
-    files.set("src/api_client.py", renderApiClient(plan));
+    files.set("src/api_client.py", renderApiClient());
     files.set("src/operations.py", renderOperations(plan));
     files.set("src/serialization.py", renderSerialization());
     files.set("src/__init__.py", "");

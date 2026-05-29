@@ -107,6 +107,99 @@ test("planner flags binary request bodies and unsupported auth for manual review
     ]);
 });
 
+test("planner preserves global auth, operation auth, no-auth overrides, alternatives, and api key locations", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Auth", version: "1.0.0" },
+        components: {
+            securitySchemes: {
+                bearerAuth: { type: "http", scheme: "bearer" },
+                basicAuth: { type: "http", scheme: "basic" },
+                headerKey: { type: "apiKey", in: "header", name: "X-API-Key" },
+                queryKey: { type: "apiKey", in: "query", name: "api_key" },
+                cookieKey: { type: "apiKey", in: "cookie", name: "session" },
+            },
+        },
+        security: [{ bearerAuth: [] }],
+        paths: {
+            "/global": {
+                get: {
+                    operationId: "globalAuth",
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/operation": {
+                get: {
+                    operationId: "operationAuth",
+                    security: [{ queryKey: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/public": {
+                get: {
+                    operationId: "publicOperation",
+                    security: [],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/alternatives": {
+                get: {
+                    operationId: "alternativeAuth",
+                    security: [{ cookieKey: [] }, { basicAuth: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/and": {
+                get: {
+                    operationId: "andAuth",
+                    security: [{ headerKey: [], bearerAuth: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/optional": {
+                get: {
+                    operationId: "optionalAuth",
+                    security: [{}, { bearerAuth: [] }],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+
+    const plans = Object.fromEntries(buildToolPlans(apiModel).map((plan) => [plan.toolName, plan]));
+
+    assert.equal(plans.globalAuth.authStrategy.strategy, "bearer");
+    assert.equal(plans.globalAuth.authStrategy.source, "global");
+    assert.deepEqual(plans.globalAuth.authStrategy.requirements?.[0].schemes.map((scheme) => scheme.schemeName), ["bearerAuth"]);
+
+    assert.equal(plans.operationAuth.authStrategy.strategy, "apiKeyQuery");
+    assert.equal(plans.operationAuth.authStrategy.source, "operation");
+    assert.equal(plans.operationAuth.authStrategy.apiKeyName, "api_key");
+
+    assert.equal(plans.publicOperation.authStrategy.strategy, "none");
+    assert.equal(plans.publicOperation.authStrategy.source, "operation");
+    assert.deepEqual(plans.publicOperation.authStrategy.requirements, []);
+
+    assert.equal(plans.alternativeAuth.authStrategy.strategy, "apiKeyCookie");
+    assert.equal(plans.alternativeAuth.authStrategy.apiKeyLocation, "cookie");
+    assert.deepEqual(
+        plans.alternativeAuth.authStrategy.requirements?.map((requirement) => requirement.schemes.map((scheme) => scheme.strategy)),
+        [["apiKeyCookie"], ["basic"]]
+    );
+
+    assert.deepEqual(
+        plans.andAuth.authStrategy.requirements?.[0].schemes.map((scheme) => scheme.strategy),
+        ["apiKeyHeader", "bearer"]
+    );
+
+    assert.equal(plans.optionalAuth.authStrategy.strategy, "none");
+    assert.equal(plans.optionalAuth.authStrategy.source, "operation");
+    assert.deepEqual(
+        plans.optionalAuth.authStrategy.requirements?.map((requirement) => requirement.schemes.map((scheme) => scheme.strategy)),
+        [[], ["bearer"]]
+    );
+});
+
 test("planner only flattens shallow simple JSON object bodies", () => {
     const apiModel = buildOpenAPIModel({
         openapi: "3.1.0",

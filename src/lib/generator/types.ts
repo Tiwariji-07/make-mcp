@@ -9,7 +9,7 @@ export type ExportLanguage = "node" | "python";
 export type ExportFramework = "mcp-ts-sdk" | "fastmcp";
 export type PackageManager = "npm" | "pnpm" | "yarn";
 export type ParamLocation = "path" | "query" | "header" | "cookie" | "body";
-export type AuthStrategy = "none" | "apiKeyHeader" | "apiKeyQuery" | "bearer" | "basic";
+export type AuthStrategy = "none" | "apiKeyHeader" | "apiKeyQuery" | "apiKeyCookie" | "bearer" | "basic";
 export type ToolAuthSource = "operation" | "global" | "none" | "unsupported";
 export type ToolManualReviewSeverity = "warning" | "error";
 export type RequestBodyContentKind =
@@ -64,7 +64,7 @@ export interface GeneratorServerConfig {
 
 export interface GeneratorAuthConfig {
     type: "none" | "apiKey" | "bearer" | "basic";
-    apiKey?: { name: string; in: "header" | "query" };
+    apiKey?: { name: string; in: "header" | "query" | "cookie" };
 }
 
 export interface GenerationFeatureFlags {
@@ -126,8 +126,21 @@ export interface ToolAuthPlan {
     source: ToolAuthSource;
     schemeName?: string;
     apiKeyName?: string;
-    apiKeyLocation?: "header" | "query";
+    apiKeyLocation?: "header" | "query" | "cookie";
     requirement?: Record<string, string[]>;
+    requirements?: ToolAuthRequirementPlan[];
+}
+
+export interface ToolAuthRequirementPlan {
+    requirement: Record<string, string[]>;
+    schemes: ToolAuthSchemePlan[];
+}
+
+export interface ToolAuthSchemePlan {
+    strategy: Exclude<AuthStrategy, "none">;
+    schemeName: string;
+    apiKeyName?: string;
+    apiKeyLocation?: "header" | "query" | "cookie";
 }
 
 export interface ToolRequestBodyPlan {
@@ -178,7 +191,7 @@ export interface NormalizedAuth {
     strategy: AuthStrategy;
     type: GeneratorAuthConfig["type"];
     apiKeyName?: string;
-    apiKeyLocation?: "header" | "query";
+    apiKeyLocation?: "header" | "query" | "cookie";
 }
 
 export interface GenerationTool {
@@ -189,6 +202,7 @@ export interface GenerationTool {
     method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
     path: string;
     params: GenerationParam[];
+    authStrategy: ToolAuthPlan;
     requestBody?: GenerationRequestBody;
 }
 

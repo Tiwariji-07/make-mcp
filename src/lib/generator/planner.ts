@@ -9,6 +9,8 @@ import type {
 import type {
     ParamLocation,
     ToolAuthPlan,
+    ToolAuthRequirementPlan,
+    ToolAuthSchemePlan,
     ToolManualReviewFlag,
     ToolPlan,
     ToolPlanParameter,
@@ -143,27 +145,63 @@ function getEffectiveSecurity(operation: ApiOperation, apiModel: ApiModel): {
 function getAuthStrategyFromScheme(
     schemeName: string,
     scheme: ApiSecurityScheme | undefined
-): Pick<ToolAuthPlan, "strategy" | "apiKeyName" | "apiKeyLocation"> | undefined {
+): ToolAuthSchemePlan | undefined {
     if (!scheme) return undefined;
 
     if (scheme.type === "apiKey") {
-        const location = scheme.in === "query" ? "query" : "header";
+        const location = scheme.in === "query"
+            ? "query"
+            : scheme.in === "cookie"
+                ? "cookie"
+                : "header";
         return {
-            strategy: location === "query" ? "apiKeyQuery" : "apiKeyHeader",
+            strategy: location === "query"
+                ? "apiKeyQuery"
+                : location === "cookie"
+                    ? "apiKeyCookie"
+                    : "apiKeyHeader",
+            schemeName,
             apiKeyName: typeof scheme.name === "string" ? scheme.name : schemeName,
             apiKeyLocation: location,
         };
     }
 
     if (scheme.type === "http" && scheme.scheme === "bearer") {
-        return { strategy: "bearer" };
+        return { strategy: "bearer", schemeName };
     }
 
     if (scheme.type === "http" && scheme.scheme === "basic") {
-        return { strategy: "basic" };
+        return { strategy: "basic", schemeName };
     }
 
     return undefined;
+}
+
+function pickPrimaryAuthPlan(
+    source: ToolAuthPlan["source"],
+    requirements: ToolAuthRequirementPlan[]
+): ToolAuthPlan {
+    const primaryRequirement = requirements[0];
+    const primaryScheme = primaryRequirement?.schemes[0];
+
+    if (!primaryScheme) {
+        return {
+            strategy: "none",
+            source,
+            requirement: primaryRequirement?.requirement,
+            requirements,
+        };
+    }
+
+    return {
+        strategy: primaryScheme.strategy,
+        source,
+        schemeName: primaryScheme.schemeName,
+        apiKeyName: primaryScheme.apiKeyName,
+        apiKeyLocation: primaryScheme.apiKeyLocation,
+        requirement: primaryRequirement.requirement,
+        requirements,
+    };
 }
 
 function buildAuthPlan(
@@ -173,28 +211,38 @@ function buildAuthPlan(
     manualReview: ToolManualReviewFlag[]
 ): ToolAuthPlan {
     const { source, requirements } = getEffectiveSecurity(operation, apiModel);
-    const nonEmptyRequirements = requirements.filter((requirement) => Object.keys(requirement).length > 0);
 
-    if (nonEmptyRequirements.length === 0) {
-        return { strategy: "none", source: "none" };
+    if (requirements.length === 0) {
+        return { strategy: "none", source: source === "operation" ? "operation" : "none", requirements: [] };
     }
 
-    if (nonEmptyRequirements.length > 1) {
-        warnings.push("Multiple alternative security requirements were found; the first supported requirement was selected.");
-    }
+    const supportedRequirements: ToolAuthRequirementPlan[] = [];
 
-    for (const requirement of nonEmptyRequirements) {
-        for (const schemeName of Object.keys(requirement)) {
+    for (const requirement of requirements) {
+        const schemes: ToolAuthSchemePlan[] = [];
+        let hasUnsupportedScheme = false;
+        const schemeNames = Object.keys(requirement);
+
+        for (const schemeName of schemeNames) {
             const auth = getAuthStrategyFromScheme(schemeName, apiModel.securitySchemes[schemeName]);
             if (auth) {
-                return {
-                    ...auth,
-                    source,
-                    schemeName,
-                    requirement,
-                };
+                schemes.push(auth);
+            } else {
+                hasUnsupportedScheme = true;
             }
         }
+
+        if (!hasUnsupportedScheme && schemes.length === schemeNames.length) {
+            supportedRequirements.push({ requirement, schemes });
+        }
+    }
+
+    if (supportedRequirements.length > 0) {
+        if (supportedRequirements.length > 1) {
+            warnings.push("Multiple alternative security requirements were found; generated clients will use the first fully configured alternative at runtime.");
+        }
+
+        return pickPrimaryAuthPlan(source, supportedRequirements);
     }
 
     manualReview.push({
@@ -203,7 +251,7 @@ function buildAuthPlan(
         message: "No supported auth strategy could be inferred from this operation's security requirements.",
     });
 
-    return { strategy: "none", source: "unsupported", requirement: nonEmptyRequirements[0] };
+    return { strategy: "none", source: "unsupported", requirement: requirements[0] };
 }
 
 function getRequestBodyStrategy(

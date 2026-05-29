@@ -7,6 +7,8 @@ import {
     type GenerationParam,
     type GeneratorToolParameter,
     type ToolPlan,
+    type ToolAuthPlan,
+    type ToolAuthSchemePlan,
     type ToolPlanParameter,
 } from "./types.ts";
 import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter } from "@/lib/api-model";
@@ -40,11 +42,16 @@ function makeUniqueDisplayName(desired: string, existing: Set<string>, fallback:
 
 function normalizeAuth(input: GeneratorRequest["authConfig"]): GenerationPlan["auth"] {
     if (input.type === "apiKey") {
+        const location = input.apiKey?.in || "header";
         return {
-            strategy: input.apiKey?.in === "query" ? "apiKeyQuery" : "apiKeyHeader",
+            strategy: location === "query"
+                ? "apiKeyQuery"
+                : location === "cookie"
+                    ? "apiKeyCookie"
+                    : "apiKeyHeader",
             type: "apiKey",
             apiKeyName: input.apiKey?.name || "X-API-Key",
-            apiKeyLocation: input.apiKey?.in || "header",
+            apiKeyLocation: location,
         };
     }
 
@@ -57,6 +64,41 @@ function normalizeAuth(input: GeneratorRequest["authConfig"]): GenerationPlan["a
     }
 
     return { strategy: "none", type: input.type };
+}
+
+function authPlanFromNormalizedAuth(auth: GenerationPlan["auth"]): ToolAuthPlan {
+    if (auth.strategy === "none") {
+        return { strategy: "none", source: "none", requirements: [] };
+    }
+
+    const schemeName = auth.strategy === "apiKeyHeader" || auth.strategy === "apiKeyQuery" || auth.strategy === "apiKeyCookie"
+        ? "apiKey"
+        : auth.strategy;
+    const scheme: ToolAuthSchemePlan = {
+        strategy: auth.strategy,
+        schemeName,
+        apiKeyName: auth.apiKeyName,
+        apiKeyLocation: auth.apiKeyLocation,
+    };
+    const requirement = { [schemeName]: [] };
+
+    return {
+        strategy: auth.strategy,
+        source: "global",
+        schemeName,
+        apiKeyName: auth.apiKeyName,
+        apiKeyLocation: auth.apiKeyLocation,
+        requirement,
+        requirements: [{ requirement, schemes: [scheme] }],
+    };
+}
+
+function mergeFallbackAuthPlan(toolAuth: ToolAuthPlan, fallbackAuth: GenerationPlan["auth"]): ToolAuthPlan {
+    if (toolAuth.strategy !== "none" || toolAuth.source !== "none" || fallbackAuth.strategy === "none") {
+        return toolAuth;
+    }
+
+    return authPlanFromNormalizedAuth(fallbackAuth);
 }
 
 function getCanonicalOperation(apiModel: ApiModel | undefined, endpointId: string): ApiOperation | undefined {
@@ -146,7 +188,8 @@ function isParameterHidden(
 function toGenerationToolFromToolPlan(
     toolPlan: ToolPlan,
     tool: GeneratorRequest["tools"][number],
-    warnings: string[]
+    warnings: string[],
+    fallbackAuth: GenerationPlan["auth"]
 ): GenerationTool {
     const seenArgs = new Set<string>();
     const visibleParameters = toolPlan.parameters.filter((parameter) =>
@@ -194,6 +237,7 @@ function toGenerationToolFromToolPlan(
         method: toolPlan.method as GenerationTool["method"],
         path: toolPlan.path,
         params,
+        authStrategy: mergeFallbackAuthPlan(toolPlan.authStrategy, fallbackAuth),
         requestBody,
     };
 }
@@ -202,7 +246,8 @@ function normalizeTool(
     tool: GeneratorRequest["tools"][number],
     toolIndex: number,
     warnings: string[],
-    apiModel?: ApiModel
+    apiModel: ApiModel | undefined,
+    fallbackAuth: GenerationPlan["auth"]
 ): GenerationTool {
     const canonicalOperation = getCanonicalOperation(apiModel, tool.endpointId);
     if (apiModel && canonicalOperation) {
@@ -220,7 +265,8 @@ function normalizeTool(
                 index: toolIndex,
             }),
             tool,
-            warnings
+            warnings,
+            fallbackAuth
         );
     }
 
@@ -284,6 +330,7 @@ function normalizeTool(
         method: method as GenerationTool["method"],
         path,
         params,
+        authStrategy: authPlanFromNormalizedAuth(fallbackAuth),
         requestBody,
     };
 }
@@ -292,9 +339,10 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
     const warnings: string[] = [];
     const seenToolNames = new Set<string>();
     const seenFunctionNames = new Set<string>();
+    const auth = normalizeAuth(request.authConfig);
 
     const tools = request.tools.map((tool, index) => {
-        const normalized = normalizeTool(tool, index, warnings, request.spec.apiModel);
+        const normalized = normalizeTool(tool, index, warnings, request.spec.apiModel, auth);
         const uniqueDisplayName = makeUniqueDisplayName(
             normalized.displayName,
             seenToolNames,
@@ -339,7 +387,7 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
             transport: request.serverConfig.transport,
             transportStrategy: getTransportStrategy(request.serverConfig.transport),
         },
-        auth: normalizeAuth(request.authConfig),
+        auth,
         features: getDefaultFeatures(request.exportConfig),
         tools,
         warnings,
