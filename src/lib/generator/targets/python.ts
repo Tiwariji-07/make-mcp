@@ -10,6 +10,12 @@ import { getPythonTransportRunLine } from "../strategies/transport.ts";
 import { toPythonStringLiteral } from "../utils.ts";
 import { toPythonType } from "../schema.ts";
 
+function renderPythonSerializationOptions(param: GenerationTool["params"][number]): string {
+    const style = param.style === undefined ? "None" : JSON.stringify(param.style);
+    const explode = param.explode === undefined ? "None" : param.explode ? "True" : "False";
+    return `{ "location": ${JSON.stringify(param.location)}, "style": ${style}, "explode": ${explode} }`;
+}
+
 function buildManifest(plan: GenerationPlan): GeneratedManifest {
     return {
         generatorVersion: plan.generatorVersion,
@@ -140,19 +146,19 @@ function renderPythonTool(tool: GenerationTool, plan: GenerationPlan): string {
         .join(", ");
 
     const pathReplacements = pathParams
-        .map((param) => `    url = url.replace(${JSON.stringify(`{${param.sourceName}}`)}, str(${param.argName}))`)
+        .map((param) => `    url = url.replace(${JSON.stringify(`{${param.sourceName}}`)}, serialize_path_parameter(${JSON.stringify(param.sourceName)}, ${param.argName}, ${renderPythonSerializationOptions(param)}))`)
         .join("\n");
 
     const queryLines = queryParams
-        .map((param) => `    if ${param.argName} is not None:\n        params[${JSON.stringify(param.sourceName)}] = ${param.argName}`)
+        .map((param) => `    append_serialized_parameter(params, ${JSON.stringify(param.sourceName)}, ${param.argName}, ${renderPythonSerializationOptions(param)})`)
         .join("\n");
 
     const headerLines = headerParams
-        .map((param) => `    if ${param.argName} is not None:\n        request_headers[${JSON.stringify(param.sourceName)}] = str(${param.argName})`)
+        .map((param) => `    if ${param.argName} is not None:\n        request_headers[${JSON.stringify(param.sourceName)}] = serialize_parameter_value(${JSON.stringify(param.sourceName)}, ${param.argName}, ${renderPythonSerializationOptions(param)})`)
         .join("\n");
 
     const cookieLines = cookieParams
-        .map((param) => `    if ${param.argName} is not None:\n        cookies[${JSON.stringify(param.sourceName)}] = str(${param.argName})`)
+        .map((param) => `    if ${param.argName} is not None:\n        cookies[${JSON.stringify(param.sourceName)}] = serialize_parameter_value(${JSON.stringify(param.sourceName)}, ${param.argName}, ${renderPythonSerializationOptions(param)})`)
         .join("\n");
 
     const requestArgs = [
@@ -168,7 +174,7 @@ function renderPythonTool(tool: GenerationTool, plan: GenerationPlan): string {
 def ${tool.functionName}(${signature}) -> dict:
     """${tool.description.replace(/"""/g, "'''")}"""
     url = f"{API_BASE_URL}${tool.path}"
-${pathReplacements ? `${pathReplacements}\n` : ""}    params: dict[str, object] = {}
+${pathReplacements ? `${pathReplacements}\n` : ""}    params: list[tuple[str, str]] = []
 ${queryLines ? `${queryLines}\n` : ""}${authStrategy.applyQuery ? `${authStrategy.applyQuery}\n` : ""}    request_headers = get_headers()
 ${headerLines ? `${headerLines}\n` : ""}    cookies: dict[str, str] = {}
 ${cookieLines ? `${cookieLines}\n` : ""}${bodyRender.setup ? `${bodyRender.setup}\n` : ""}${bodyRender.headerLines.length > 0 ? `${bodyRender.headerLines.join("\n")}\n` : ""}    response = client.request(
@@ -191,6 +197,7 @@ function renderServer(plan: GenerationPlan): string {
 import os
 import base64
 import httpx
+from urllib.parse import quote
 from dotenv import load_dotenv
 from fastmcp import FastMCP
 
@@ -201,6 +208,125 @@ ${authStrategy.envDeclarations}
 
 mcp = FastMCP(${JSON.stringify(plan.server.name)})
 client = httpx.Client(timeout=30.0)
+
+
+def default_parameter_style(location: str) -> str:
+    if location in ("path", "header"):
+        return "simple"
+    return "form"
+
+
+def should_explode(style: str, explode: bool | None) -> bool:
+    return explode if explode is not None else style == "form"
+
+
+def scalar_to_string(value: object) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    return str(value)
+
+
+def object_entries(value: object) -> list[tuple[str, object]]:
+    if not isinstance(value, dict):
+        return []
+    return [(str(key), entry_value) for key, entry_value in value.items() if entry_value is not None]
+
+
+def serialize_parameter_value(name: str, value: object, options: dict) -> str:
+    style = options.get("style") or default_parameter_style(options["location"])
+    explode = should_explode(style, options.get("explode"))
+    delimiter = " " if style == "spaceDelimited" else "|" if style == "pipeDelimited" else ","
+
+    if isinstance(value, list):
+        return delimiter.join(scalar_to_string(entry) for entry in value)
+
+    entries = object_entries(value)
+    if entries:
+        if explode:
+            return delimiter.join(f"{key}={scalar_to_string(entry_value)}" for key, entry_value in entries)
+        flattened: list[str] = []
+        for key, entry_value in entries:
+            flattened.extend([key, scalar_to_string(entry_value)])
+        return delimiter.join(flattened)
+
+    return scalar_to_string(value)
+
+
+def serialize_path_parameter(name: str, value: object, options: dict) -> str:
+    style = options.get("style") or "simple"
+    explode = should_explode(style, options.get("explode"))
+    encoded_name = quote(name, safe="")
+
+    def encode(entry: object) -> str:
+        return quote(scalar_to_string(entry), safe="")
+
+    if isinstance(value, list):
+        encoded_values = [encode(entry) for entry in value]
+        if style == "label":
+            return "." + ".".join(encoded_values)
+        if style == "matrix":
+            if explode:
+                return "".join(f";{encoded_name}={entry}" for entry in encoded_values)
+            return f";{encoded_name}={','.join(encoded_values)}"
+        return ",".join(encoded_values)
+
+    entries = object_entries(value)
+    if entries:
+        if style == "label":
+            if explode:
+                values = [f"{quote(key, safe='')}={encode(entry_value)}" for key, entry_value in entries]
+            else:
+                values = [item for key, entry_value in entries for item in (quote(key, safe=""), encode(entry_value))]
+            return "." + ".".join(values)
+        if style == "matrix":
+            if explode:
+                return "".join(f";{quote(key, safe='')}={encode(entry_value)}" for key, entry_value in entries)
+            values = [item for key, entry_value in entries for item in (quote(key, safe=""), encode(entry_value))]
+            return f";{encoded_name}={','.join(values)}"
+        if explode:
+            values = [f"{quote(key, safe='')}={encode(entry_value)}" for key, entry_value in entries]
+        else:
+            values = [item for key, entry_value in entries for item in (quote(key, safe=""), encode(entry_value))]
+        return ",".join(values)
+
+    encoded_value = encode(value)
+    if style == "label":
+        return f".{encoded_value}"
+    if style == "matrix":
+        return f";{encoded_name}={encoded_value}"
+    return encoded_value
+
+
+def append_serialized_parameter(params: list[tuple[str, str]], name: str, value: object, options: dict) -> None:
+    if value is None:
+        return
+
+    style = options.get("style") or "form"
+    explode = should_explode(style, options.get("explode"))
+
+    if isinstance(value, list):
+        if style == "form" and explode:
+            params.extend((name, scalar_to_string(entry)) for entry in value)
+            return
+        params.append((name, serialize_parameter_value(name, value, {**options, "style": style, "explode": explode})))
+        return
+
+    entries = object_entries(value)
+    if entries:
+        if style == "deepObject":
+            params.extend((f"{name}[{key}]", scalar_to_string(entry_value)) for key, entry_value in entries)
+            return
+        if style == "form" and explode:
+            params.extend((key, scalar_to_string(entry_value)) for key, entry_value in entries)
+            return
+        params.append((name, serialize_parameter_value(name, value, {**options, "style": style, "explode": explode})))
+        return
+
+    params.append((name, scalar_to_string(value)))
 
 
 def get_headers() -> dict:

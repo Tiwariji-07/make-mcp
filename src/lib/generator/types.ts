@@ -200,6 +200,8 @@ export interface GenerationParam {
     description: string;
     location: ParamLocation;
     schema?: Record<string, unknown>;
+    style?: string;
+    explode?: boolean;
 }
 
 export interface GenerationRequestBody {

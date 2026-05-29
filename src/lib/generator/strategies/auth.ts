@@ -75,7 +75,7 @@ export function getPythonAuthStrategy(auth: NormalizedAuth): PythonAuthStrategy 
             return {
                 envDeclarations: 'API_KEY = os.getenv("API_KEY", "")',
                 applyHeaders: "",
-                applyQuery: `    if API_KEY:\n        params[${JSON.stringify(auth.apiKeyName || "api_key")}] = API_KEY`,
+                applyQuery: `    if API_KEY:\n        params.append((${JSON.stringify(auth.apiKeyName || "api_key")}, API_KEY))`,
             };
         case "bearer":
             return {

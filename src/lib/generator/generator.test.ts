@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import vm from "node:vm";
+import ts from "typescript";
 import { buildOpenAPIModel } from "../api-model/openapi.ts";
 import { createPreviewResponse, type GeneratorRequest } from "./index.ts";
 
@@ -113,6 +116,81 @@ function getFileContent(preview: ReturnType<typeof createPreviewResponse>, fileN
     const file = preview.files.find((entry) => entry.name === fileName);
     assert.ok(file, `Expected generated file ${fileName}`);
     return file.content;
+}
+
+function extractBlock(source: string, start: string, end: string): string {
+    const startIndex = source.indexOf(start);
+    const endIndex = source.indexOf(end, startIndex);
+    assert.notEqual(startIndex, -1, `Expected block start ${start}`);
+    assert.notEqual(endIndex, -1, `Expected block end ${end}`);
+    return source.slice(startIndex, endIndex);
+}
+
+type NodeSerializationHelpers = {
+    serializePathParameter: (name: string, value: unknown, options: Record<string, unknown>) => string;
+    appendSerializedParameter: (
+        params: URLSearchParams,
+        name: string,
+        value: unknown,
+        options: Record<string, unknown>
+    ) => void;
+};
+
+function loadNodeSerializationHelpers(indexFile: string): NodeSerializationHelpers {
+    const helperSource = extractBlock(indexFile, "type SerializedParameterOptions", "function getHeaders");
+    const output = ts.transpileModule(`${helperSource}
+(globalThis as any).__serializationHelpers = { serializePathParameter, appendSerializedParameter };`, {
+        compilerOptions: {
+            module: ts.ModuleKind.CommonJS,
+            target: ts.ScriptTarget.ES2022,
+        },
+    }).outputText;
+    const context = {
+        URLSearchParams,
+        encodeURIComponent,
+    } as Record<string, unknown>;
+
+    vm.runInNewContext(output, context);
+    return context.__serializationHelpers as NodeSerializationHelpers;
+}
+
+function nodeQueryString(
+    helpers: NodeSerializationHelpers,
+    name: string,
+    value: unknown,
+    options: Record<string, unknown>
+): string {
+    const params = new URLSearchParams();
+    helpers.appendSerializedParameter(params, name, value, options);
+    return params.toString();
+}
+
+function runPythonSerializationCases(serverFile: string): Record<string, string> {
+    const helperSource = extractBlock(serverFile, "def default_parameter_style", "def get_headers");
+    const script = `from urllib.parse import quote
+${helperSource}
+import json
+
+def query_string(name, value, options):
+    from urllib.parse import urlencode
+    params = []
+    append_serialized_parameter(params, name, value, options)
+    return urlencode(params)
+
+print(json.dumps({
+    "form_array_explode": query_string("tags", ["a", "b"], {"location": "query", "style": "form", "explode": True}),
+    "form_object_explode": query_string("filter", {"role": "admin", "active": True}, {"location": "query", "style": "form", "explode": True}),
+    "deep_object": query_string("filter", {"status": "open"}, {"location": "query", "style": "deepObject", "explode": True}),
+    "space_delimited": query_string("tags", ["a", "b"], {"location": "query", "style": "spaceDelimited", "explode": False}),
+    "pipe_delimited": query_string("tags", ["a", "b"], {"location": "query", "style": "pipeDelimited", "explode": False}),
+    "simple_path": serialize_path_parameter("ids", ["a", "b"], {"location": "path", "style": "simple", "explode": False}),
+    "label_path": serialize_path_parameter("ids", ["a", "b"], {"location": "path", "style": "label", "explode": True}),
+    "matrix_path": serialize_path_parameter("ids", ["a", "b"], {"location": "path", "style": "matrix", "explode": False}),
+    "matrix_path_explode": serialize_path_parameter("ids", ["a", "b"], {"location": "path", "style": "matrix", "explode": True}),
+}))
+`;
+
+    return JSON.parse(execFileSync("python3", ["-c", script], { encoding: "utf8" })) as Record<string, string>;
 }
 
 test("openapi -> node preview matches golden contract", () => {
@@ -263,8 +341,8 @@ test("postman -> node preview preserves path and headers", () => {
     assert.equal(preview.manifest.language, "node");
     const indexFile = getFileContent(preview, "src/index.ts");
     assert.match(indexFile, /Authorization"\] = `Bearer \$\{BEARER_TOKEN\}`/);
-    assert.match(indexFile, /url = url\.replace\("\{orderId\}", String\(args\["order_id"\]\)\)/);
-    assert.match(indexFile, /requestHeaders\["X-Trace-Id"\] = String\(args\["x_trace_id"\]\)/);
+    assert.match(indexFile, /url = url\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
+    assert.match(indexFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
 });
 
 test("postman -> python preview preserves tool name and stdio transport", () => {
@@ -288,6 +366,240 @@ test("postman -> python preview preserves tool name and stdio transport", () => 
     const serverFile = getFileContent(preview, "src/server.py");
     assert.match(serverFile, /@mcp\.tool\(name="get-order"\)/);
     assert.match(serverFile, /mcp\.run\(transport="stdio"\)/);
+});
+
+test("previews serialize OpenAPI path, query, header, and cookie parameters with style metadata", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Search API", version: "1.0.0" },
+        paths: {
+            "/reports/{ids}": {
+                get: {
+                    operationId: "searchReports",
+                    parameters: [
+                        {
+                            name: "ids",
+                            in: "path",
+                            required: true,
+                            style: "simple",
+                            explode: false,
+                            schema: { type: "array", items: { type: "string" } },
+                        },
+                        {
+                            name: "filter",
+                            in: "query",
+                            style: "deepObject",
+                            explode: true,
+                            schema: {
+                                type: "object",
+                                properties: {
+                                    status: { type: "string" },
+                                    owner: { type: "string" },
+                                },
+                            },
+                        },
+                        {
+                            name: "tags",
+                            in: "query",
+                            style: "pipeDelimited",
+                            explode: false,
+                            schema: { type: "array", items: { type: "string" } },
+                        },
+                        {
+                            name: "X-Fields",
+                            in: "header",
+                            style: "simple",
+                            explode: false,
+                            schema: { type: "array", items: { type: "string" } },
+                        },
+                        {
+                            name: "prefs",
+                            in: "cookie",
+                            style: "form",
+                            explode: false,
+                            schema: {
+                                type: "object",
+                                properties: {
+                                    theme: { type: "string" },
+                                },
+                            },
+                        },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const baseRequest: Omit<GeneratorRequest, "exportConfig"> = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://search.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/reports/{ids}",
+            enabled: true,
+            toolName: "searchReports",
+            description: "Search reports",
+            parameters: [],
+        }],
+        serverConfig: {
+            name: "search-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+    };
+
+    const nodePreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const nodeIndex = getFileContent(nodePreview, "src/index.ts");
+    assert.match(nodeIndex, /serializePathParameter\("ids", args\["ids"\], \{ location: "path", style: "simple", explode: false \}\)/);
+    assert.match(nodeIndex, /appendSerializedParameter\(queryString, "filter", args\["filter"\], \{ location: "query", style: "deepObject", explode: true \}\)/);
+    assert.match(nodeIndex, /appendSerializedParameter\(queryString, "tags", args\["tags"\], \{ location: "query", style: "pipeDelimited", explode: false \}\)/);
+    assert.match(nodeIndex, /requestHeaders\["X-Fields"\] = serializeParameterValue\("X-Fields", args\["X_Fields"\], \{ location: "header", style: "simple", explode: false \}\)/);
+    assert.match(nodeIndex, /cookiePairs\.push\(`prefs=\$\{encodeURIComponent\(serializeParameterValue\("prefs", args\["prefs"\], \{ location: "cookie", style: "form", explode: false \}\)\)\}`\)/);
+
+    const pythonPreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "python",
+            framework: "fastmcp",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const serverFile = getFileContent(pythonPreview, "src/server.py");
+    assert.match(serverFile, /serialize_path_parameter\("ids", ids, \{ "location": "path", "style": "simple", "explode": False \}\)/);
+    assert.match(serverFile, /append_serialized_parameter\(params, "filter", filter, \{ "location": "query", "style": "deepObject", "explode": True \}\)/);
+    assert.match(serverFile, /append_serialized_parameter\(params, "tags", tags, \{ "location": "query", "style": "pipeDelimited", "explode": False \}\)/);
+    assert.match(serverFile, /request_headers\["X-Fields"\] = serialize_parameter_value\("X-Fields", X_Fields, \{ "location": "header", "style": "simple", "explode": False \}\)/);
+    assert.match(serverFile, /cookies\["prefs"\] = serialize_parameter_value\("prefs", prefs, \{ "location": "cookie", "style": "form", "explode": False \}\)/);
+});
+
+test("generated serialization helpers produce golden OpenAPI array and object encodings", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Serialization API", version: "1.0.0" },
+        paths: {
+            "/reports/{ids}": {
+                get: {
+                    operationId: "serializeReports",
+                    parameters: [
+                        {
+                            name: "ids",
+                            in: "path",
+                            required: true,
+                            style: "simple",
+                            explode: false,
+                            schema: { type: "array", items: { type: "string" } },
+                        },
+                        {
+                            name: "tags",
+                            in: "query",
+                            style: "form",
+                            explode: true,
+                            schema: { type: "array", items: { type: "string" } },
+                        },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const baseRequest: Omit<GeneratorRequest, "exportConfig"> = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://serialization.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/reports/{ids}",
+            enabled: true,
+            toolName: "serializeReports",
+            description: "Serialize reports",
+            parameters: [],
+        }],
+        serverConfig: {
+            name: "serialization-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+    };
+
+    const nodePreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const nodeHelpers = loadNodeSerializationHelpers(getFileContent(nodePreview, "src/index.ts"));
+    assert.equal(nodeQueryString(nodeHelpers, "tags", ["a", "b"], { location: "query", style: "form", explode: true }), "tags=a&tags=b");
+    assert.equal(nodeQueryString(nodeHelpers, "filter", { role: "admin", active: true }, { location: "query", style: "form", explode: true }), "role=admin&active=true");
+    assert.equal(nodeQueryString(nodeHelpers, "filter", { status: "open" }, { location: "query", style: "deepObject", explode: true }), "filter%5Bstatus%5D=open");
+    assert.equal(nodeQueryString(nodeHelpers, "tags", ["a", "b"], { location: "query", style: "spaceDelimited", explode: false }), "tags=a+b");
+    assert.equal(nodeQueryString(nodeHelpers, "tags", ["a", "b"], { location: "query", style: "pipeDelimited", explode: false }), "tags=a%7Cb");
+    assert.equal(nodeHelpers.serializePathParameter("ids", ["a", "b"], { location: "path", style: "simple", explode: false }), "a,b");
+    assert.equal(nodeHelpers.serializePathParameter("ids", ["a", "b"], { location: "path", style: "label", explode: true }), ".a.b");
+    assert.equal(nodeHelpers.serializePathParameter("ids", ["a", "b"], { location: "path", style: "matrix", explode: false }), ";ids=a,b");
+    assert.equal(nodeHelpers.serializePathParameter("ids", ["a", "b"], { location: "path", style: "matrix", explode: true }), ";ids=a;ids=b");
+
+    const pythonPreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "python",
+            framework: "fastmcp",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const pythonCases = runPythonSerializationCases(getFileContent(pythonPreview, "src/server.py"));
+    assert.deepEqual(pythonCases, {
+        form_array_explode: "tags=a&tags=b",
+        form_object_explode: "role=admin&active=true",
+        deep_object: "filter%5Bstatus%5D=open",
+        space_delimited: "tags=a+b",
+        pipe_delimited: "tags=a%7Cb",
+        simple_path: "a,b",
+        label_path: ".a.b",
+        matrix_path: ";ids=a,b",
+        matrix_path_explode: ";ids=a;ids=b",
+    });
 });
 
 test("node preview preserves cookie params and form encoded bodies", () => {

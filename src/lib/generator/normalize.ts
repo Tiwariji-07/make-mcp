@@ -169,6 +169,8 @@ function toGenerationToolFromToolPlan(
             description: configuredParameter?.description || parameter.description,
             location: parameter.location,
             schema: parameter.schema,
+            style: parameter.style,
+            explode: parameter.explode,
         };
     });
     const bodyParams = params.filter((param) => param.location === "body");
@@ -252,6 +254,8 @@ function normalizeTool(
             description: parameter.description || canonicalParameter?.description || "",
             location,
             schema: canonicalParameter?.schema || parameter.schema,
+            style: canonicalParameter?.style,
+            explode: canonicalParameter?.explode,
         };
     });
 

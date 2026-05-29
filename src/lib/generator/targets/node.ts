@@ -10,6 +10,10 @@ import { getNodeTransportStrategy } from "../strategies/transport.ts";
 import { toJsStringLiteral } from "../utils.ts";
 import { toZodType } from "../schema.ts";
 
+function renderNodeSerializationOptions(param: GenerationTool["params"][number]): string {
+    return `{ location: ${JSON.stringify(param.location)}, style: ${JSON.stringify(param.style)}, explode: ${param.explode === undefined ? "undefined" : String(param.explode)} }`;
+}
+
 function buildManifest(plan: GenerationPlan): GeneratedManifest {
     return {
         generatorVersion: plan.generatorVersion,
@@ -148,19 +152,19 @@ function renderNodeTool(tool: GenerationTool, plan: GenerationPlan): string {
         .join("\n");
 
     const pathReplacements = pathParams
-        .map((param) => `      url = url.replace(${JSON.stringify(`{${param.sourceName}}`)}, String(args[${JSON.stringify(param.argName)}]));`)
+        .map((param) => `      url = url.replace(${JSON.stringify(`{${param.sourceName}}`)}, serializePathParameter(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}));`)
         .join("\n");
 
     const queryLines = queryParams
-        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) queryString.append(${JSON.stringify(param.sourceName)}, String(args[${JSON.stringify(param.argName)}]));`)
+        .map((param) => `      appendSerializedParameter(queryString, ${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
         .join("\n");
 
     const headerLines = headerParams
-        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) requestHeaders[${JSON.stringify(param.sourceName)}] = String(args[${JSON.stringify(param.argName)}]);`)
+        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) requestHeaders[${JSON.stringify(param.sourceName)}] = serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
         .join("\n");
 
     const cookieLines = cookieParams
-        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) cookiePairs.push(\`${param.sourceName}=\${encodeURIComponent(String(args[${JSON.stringify(param.argName)}]))}\`);`)
+        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) cookiePairs.push(\`${encodeURIComponent(param.sourceName)}=\${encodeURIComponent(serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}))}\`);`)
         .join("\n");
 
     const bodySetup = bodyRender.setup ? `${bodyRender.setup}\n` : "";
@@ -227,6 +231,134 @@ import { z } from "zod";
 
 const API_BASE_URL = process.env.API_BASE_URL || ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")};
 ${authStrategy.envDeclarations}
+
+type SerializedParameterOptions = {
+  location: "path" | "query" | "header" | "cookie";
+  style?: string;
+  explode?: boolean;
+};
+
+function defaultParameterStyle(location: SerializedParameterOptions["location"]): string {
+  if (location === "path" || location === "header") return "simple";
+  return "form";
+}
+
+function shouldExplode(style: string, explode?: boolean): boolean {
+  return explode ?? style === "form";
+}
+
+function scalarToString(value: unknown): string {
+  if (value === null || value === undefined) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+  return JSON.stringify(value);
+}
+
+function objectEntries(value: unknown): [string, unknown][] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+  return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
+}
+
+function serializeParameterValue(name: string, value: unknown, options: SerializedParameterOptions): string {
+  const style = options.style || defaultParameterStyle(options.location);
+  const explode = shouldExplode(style, options.explode);
+  const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
+
+  if (Array.isArray(value)) {
+    return value.map(scalarToString).join(delimiter);
+  }
+
+  const entries = objectEntries(value);
+  if (entries.length > 0) {
+    if (explode) {
+      return entries.map(([key, entryValue]) => \`\${key}=\${scalarToString(entryValue)}\`).join(delimiter);
+    }
+    return entries.flatMap(([key, entryValue]) => [key, scalarToString(entryValue)]).join(delimiter);
+  }
+
+  return scalarToString(value);
+}
+
+function serializePathParameter(name: string, value: unknown, options: SerializedParameterOptions): string {
+  const style = options.style || "simple";
+  const explode = shouldExplode(style, options.explode);
+  const encode = (entry: unknown) => encodeURIComponent(scalarToString(entry));
+  const encodedName = encodeURIComponent(name);
+
+  if (Array.isArray(value)) {
+    const encodedValues = value.map(encode);
+    if (style === "label") return \`.\${encodedValues.join(".")}\`;
+    if (style === "matrix") {
+      return explode
+        ? encodedValues.map((entry) => \`;\${encodedName}=\${entry}\`).join("")
+        : \`;\${encodedName}=\${encodedValues.join(",")}\`;
+    }
+    return encodedValues.join(",");
+  }
+
+  const entries = objectEntries(value);
+  if (entries.length > 0) {
+    if (style === "label") {
+      const values = explode
+        ? entries.map(([key, entryValue]) => \`\${encodeURIComponent(key)}=\${encode(entryValue)}\`)
+        : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+      return \`.\${values.join(".")}\`;
+    }
+    if (style === "matrix") {
+      if (explode) {
+        return entries.map(([key, entryValue]) => \`;\${encodeURIComponent(key)}=\${encode(entryValue)}\`).join("");
+      }
+      const values = entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+      return \`;\${encodedName}=\${values.join(",")}\`;
+    }
+    const values = explode
+      ? entries.map(([key, entryValue]) => \`\${encodeURIComponent(key)}=\${encode(entryValue)}\`)
+      : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+    return values.join(",");
+  }
+
+  const encodedValue = encode(value);
+  if (style === "label") return \`.\${encodedValue}\`;
+  if (style === "matrix") return \`;\${encodedName}=\${encodedValue}\`;
+  return encodedValue;
+}
+
+function appendSerializedParameter(
+  params: URLSearchParams,
+  name: string,
+  value: unknown,
+  options: SerializedParameterOptions
+) {
+  if (value === undefined || value === null) return;
+
+  const style = options.style || "form";
+  const explode = shouldExplode(style, options.explode);
+
+  if (Array.isArray(value)) {
+    if (style === "form" && explode) {
+      for (const entry of value) params.append(name, scalarToString(entry));
+      return;
+    }
+    params.append(name, serializeParameterValue(name, value, { ...options, style, explode }));
+    return;
+  }
+
+  const entries = objectEntries(value);
+  if (entries.length > 0) {
+    if (style === "deepObject") {
+      for (const [key, entryValue] of entries) params.append(\`\${name}[\${key}]\`, scalarToString(entryValue));
+      return;
+    }
+    if (style === "form" && explode) {
+      for (const [key, entryValue] of entries) params.append(key, scalarToString(entryValue));
+      return;
+    }
+    params.append(name, serializeParameterValue(name, value, { ...options, style, explode }));
+    return;
+  }
+
+  params.append(name, scalarToString(value));
+}
 
 function getHeaders(): Record<string, string> {
   const headers: Record<string, string> = {};
