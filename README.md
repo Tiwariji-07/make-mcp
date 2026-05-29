@@ -82,7 +82,7 @@ The generated MCP servers include:
 
 - **Full MCP SDK integration** — Uses official `@modelcontextprotocol/sdk` (Node) or `fastmcp` (Python)
 - **Type-safe parameters** — Zod schemas (Node) or Python type hints
-- **Transport options** — stdio, SSE, or HTTP (Streamable)
+- **Transport options** — Streamable HTTP by default, stdio for local clients, SSE as legacy
 - **Authentication support** — API Key, Bearer Token, or Basic Auth
 - **Environment config** — `.env.example` with all required variables
 - **Documentation** — README with setup and usage instructions

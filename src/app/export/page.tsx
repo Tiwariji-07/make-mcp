@@ -27,7 +27,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/ui/copy-button";
-import { AuthConfig, ParsedSpec, useProjectStore } from "@/store/project-store";
+import { AuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
 
 interface PreviewFile {
   name: string;
@@ -54,6 +54,7 @@ interface PreviewData {
 }
 
 type AuthType = AuthConfig["type"];
+type Transport = ServerConfig["transport"];
 
 const defaultExportFeatures = {
   documentation: true,
@@ -82,6 +83,14 @@ function getDetectedAuthOptions(spec: ParsedSpec): AuthConfig[] {
 
 function getAuthLabel(type: AuthType): string {
   return { none: "None", apiKey: "API Key", bearer: "Bearer", basic: "Basic" }[type];
+}
+
+function getTransportLabel(transport: Transport): string {
+  return {
+    stdio: "stdio",
+    http: "Streamable HTTP",
+    sse: "SSE",
+  }[transport];
 }
 
 export default function ExportPage() {
@@ -293,15 +302,15 @@ export default function ExportPage() {
                   </Label>
                   <Select
                     value={serverConfig.transport}
-                    onValueChange={(v) => setServerConfig({ transport: v as "stdio" | "sse" | "http" })}
+                    onValueChange={(v) => setServerConfig({ transport: v as Transport })}
                   >
                     <SelectTrigger className="h-8 bg-background border-border text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="stdio">stdio</SelectItem>
-                      <SelectItem value="sse">SSE</SelectItem>
-                      <SelectItem value="http">HTTP</SelectItem>
+                      <SelectItem value="stdio">stdio (local clients)</SelectItem>
+                      <SelectItem value="http">Streamable HTTP (recommended remote)</SelectItem>
+                      <SelectItem value="sse">SSE (legacy)</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
@@ -510,7 +519,7 @@ export default function ExportPage() {
             <div className="px-6 py-3 border-t border-border flex items-center gap-4 text-[10px] text-muted-foreground tracking-wider uppercase">
               <span>{exportConfig.language === "node" ? "TypeScript" : "Python"}</span>
               <span className="text-primary/20">·</span>
-              <span>{serverConfig.transport}</span>
+              <span>{getTransportLabel(serverConfig.transport)}</span>
               <span className="text-primary/20">·</span>
               <span>{selectedTools.length} tools</span>
               <span className="text-primary/20">·</span>

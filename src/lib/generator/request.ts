@@ -66,7 +66,7 @@ const requestSchema = z.object({
         version: z.string().trim().min(1),
         host: z.string().trim().min(1),
         port: z.number().int().min(1).max(65535),
-        transport: z.enum(["stdio", "sse", "http"]),
+        transport: z.enum(["stdio", "sse", "http"]).default("http"),
     }),
     authConfig: authSchema,
     exportConfig: exportSchema,

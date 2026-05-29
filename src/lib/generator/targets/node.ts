@@ -490,6 +490,11 @@ function renderReadme(plan: GenerationPlan): string {
     const dev = plan.runtime.packageManager === "npm" ? "npm run dev" : `${plan.runtime.packageManager} dev`;
     const build = plan.runtime.packageManager === "npm" ? "npm run build" : `${plan.runtime.packageManager} build`;
     const start = plan.runtime.packageManager === "npm" ? "npm run start" : `${plan.runtime.packageManager} start`;
+    const currentTransport = plan.runtime.transport === "http"
+        ? "Streamable HTTP"
+        : plan.runtime.transport === "stdio"
+            ? "stdio"
+            : "SSE";
 
     return `# ${plan.server.name}
 
@@ -514,6 +519,14 @@ cp .env.example .env
 \`\`\`bash
 ${dev}
 \`\`\`
+
+## Transport
+
+This server is configured for ${currentTransport}.
+
+- \`stdio\`: best for local MCP clients.
+- \`http\`: Streamable HTTP, recommended for remote or server deployments.
+- \`sse\`: legacy option for older clients.
 
 ## Build
 

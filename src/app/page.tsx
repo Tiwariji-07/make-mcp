@@ -164,7 +164,7 @@ export default function HomePage() {
                 <div className="flex-1 border border-border p-3 text-center">
                   <div className="text-[10px] text-muted-foreground tracking-[0.15em] uppercase mb-1">Transport</div>
                   <div className="text-sm font-semibold" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-                    stdio / SSE
+                    stdio / HTTP
                   </div>
                 </div>
               </div>

@@ -446,7 +446,7 @@ const initialState = {
         version: "1.0.0",
         host: "localhost",
         port: 8080,
-        transport: "stdio" as const,
+        transport: "http" as const,
     },
     exportConfig: {
         language: "node" as const,
