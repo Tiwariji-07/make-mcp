@@ -136,9 +136,8 @@ type NodeSerializationHelpers = {
     ) => void;
 };
 
-function loadNodeSerializationHelpers(indexFile: string): NodeSerializationHelpers {
-    const helperSource = extractBlock(indexFile, "type SerializedParameterOptions", "function getHeaders");
-    const output = ts.transpileModule(`${helperSource}
+function loadNodeSerializationHelpers(serializationFile: string): NodeSerializationHelpers {
+    const output = ts.transpileModule(`${serializationFile}
 (globalThis as any).__serializationHelpers = { serializePathParameter, appendSerializedParameter };`, {
         compilerOptions: {
             module: ts.ModuleKind.CommonJS,
@@ -148,6 +147,7 @@ function loadNodeSerializationHelpers(indexFile: string): NodeSerializationHelpe
     const context = {
         URLSearchParams,
         encodeURIComponent,
+        exports: {},
     } as Record<string, unknown>;
 
     vm.runInNewContext(output, context);
@@ -215,11 +215,19 @@ test("openapi -> node preview matches golden contract", () => {
     assert.equal(preview.verification?.status, "passed");
     assert.ok(preview.files.some((file) => file.name === "Dockerfile"));
     assert.ok(preview.files.some((file) => file.name === "tests/manifest.test.ts"));
+    assert.ok(preview.files.some((file) => file.name === "src/config.ts"));
+    assert.ok(preview.files.some((file) => file.name === "src/mcp/server.ts"));
+    assert.ok(preview.files.some((file) => file.name === "src/api/client.ts"));
+    assert.ok(preview.files.some((file) => file.name === "src/api/operations.ts"));
+    assert.ok(preview.files.some((file) => file.name === "src/api/serialization.ts"));
 
+    const serverFile = getFileContent(preview, "src/mcp/server.ts");
+    const clientFile = getFileContent(preview, "src/api/client.ts");
+    const operationsFile = getFileContent(preview, "src/api/operations.ts");
     const indexFile = getFileContent(preview, "src/index.ts");
-    assert.match(indexFile, /server\.tool\(\s*"create-customer"/);
-    assert.match(indexFile, /headers\["x-api-key"\] = API_KEY/);
-    assert.match(indexFile, /"accountId": args\["account_id"\]/);
+    assert.match(serverFile, /server\.tool\(\s*"create-customer"/);
+    assert.match(clientFile, /headers\["x-api-key"\] = API_KEY/);
+    assert.match(operationsFile, /"accountId": args\["account_id"\]/);
     assert.match(indexFile, /if \(req\.method !== "POST"\)/);
     assert.match(indexFile, /const server = createServer\(\);\n    const transport = new StreamableHTTPServerTransport\(\{ sessionIdGenerator: undefined \}\);/);
     assert.match(indexFile, /message: "Method not allowed\."/);
@@ -316,10 +324,11 @@ test("node preview keeps complex json bodies as a single body argument", () => {
         },
     });
 
-    const indexFile = getFileContent(preview, "src/index.ts");
-    assert.match(indexFile, /"body": z\.object/);
-    assert.match(indexFile, /body: JSON\.stringify\(args\["body"\]\)/);
-    assert.doesNotMatch(indexFile, /"profile": args\["profile"\]/);
+    const serverFile = getFileContent(preview, "src/mcp/server.ts");
+    const operationsFile = getFileContent(preview, "src/api/operations.ts");
+    assert.match(serverFile, /"body": z\.object/);
+    assert.match(operationsFile, /body: JSON\.stringify\(args\["body"\]\)/);
+    assert.doesNotMatch(operationsFile, /"profile": args\["profile"\]/);
 });
 
 test("postman -> node preview preserves path and headers", () => {
@@ -339,10 +348,11 @@ test("postman -> node preview preserves path and headers", () => {
     });
 
     assert.equal(preview.manifest.language, "node");
-    const indexFile = getFileContent(preview, "src/index.ts");
-    assert.match(indexFile, /Authorization"\] = `Bearer \$\{BEARER_TOKEN\}`/);
-    assert.match(indexFile, /url = url\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
-    assert.match(indexFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
+    const clientFile = getFileContent(preview, "src/api/client.ts");
+    const operationsFile = getFileContent(preview, "src/api/operations.ts");
+    assert.match(clientFile, /Authorization"\] = `Bearer \$\{BEARER_TOKEN\}`/);
+    assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
+    assert.match(operationsFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
 });
 
 test("postman -> python preview preserves tool name and stdio transport", () => {
@@ -467,12 +477,12 @@ test("previews serialize OpenAPI path, query, header, and cookie parameters with
             },
         },
     });
-    const nodeIndex = getFileContent(nodePreview, "src/index.ts");
-    assert.match(nodeIndex, /serializePathParameter\("ids", args\["ids"\], \{ location: "path", style: "simple", explode: false \}\)/);
-    assert.match(nodeIndex, /appendSerializedParameter\(queryString, "filter", args\["filter"\], \{ location: "query", style: "deepObject", explode: true \}\)/);
-    assert.match(nodeIndex, /appendSerializedParameter\(queryString, "tags", args\["tags"\], \{ location: "query", style: "pipeDelimited", explode: false \}\)/);
-    assert.match(nodeIndex, /requestHeaders\["X-Fields"\] = serializeParameterValue\("X-Fields", args\["X_Fields"\], \{ location: "header", style: "simple", explode: false \}\)/);
-    assert.match(nodeIndex, /cookiePairs\.push\(`prefs=\$\{encodeURIComponent\(serializeParameterValue\("prefs", args\["prefs"\], \{ location: "cookie", style: "form", explode: false \}\)\)\}`\)/);
+    const nodeOperations = getFileContent(nodePreview, "src/api/operations.ts");
+    assert.match(nodeOperations, /serializePathParameter\("ids", args\["ids"\], \{ location: "path", style: "simple", explode: false \}\)/);
+    assert.match(nodeOperations, /appendSerializedParameter\(queryString, "filter", args\["filter"\], \{ location: "query", style: "deepObject", explode: true \}\)/);
+    assert.match(nodeOperations, /appendSerializedParameter\(queryString, "tags", args\["tags"\], \{ location: "query", style: "pipeDelimited", explode: false \}\)/);
+    assert.match(nodeOperations, /requestHeaders\["X-Fields"\] = serializeParameterValue\("X-Fields", args\["X_Fields"\], \{ location: "header", style: "simple", explode: false \}\)/);
+    assert.match(nodeOperations, /cookiePairs\.push\(`prefs=\$\{encodeURIComponent\(serializeParameterValue\("prefs", args\["prefs"\], \{ location: "cookie", style: "form", explode: false \}\)\)\}`\)/);
 
     const pythonPreview = createPreviewResponse({
         ...baseRequest,
@@ -563,7 +573,7 @@ test("generated serialization helpers produce golden OpenAPI array and object en
             },
         },
     });
-    const nodeHelpers = loadNodeSerializationHelpers(getFileContent(nodePreview, "src/index.ts"));
+    const nodeHelpers = loadNodeSerializationHelpers(getFileContent(nodePreview, "src/api/serialization.ts"));
     assert.equal(nodeQueryString(nodeHelpers, "tags", ["a", "b"], { location: "query", style: "form", explode: true }), "tags=a&tags=b");
     assert.equal(nodeQueryString(nodeHelpers, "filter", { role: "admin", active: true }, { location: "query", style: "form", explode: true }), "role=admin&active=true");
     assert.equal(nodeQueryString(nodeHelpers, "filter", { status: "open" }, { location: "query", style: "deepObject", explode: true }), "filter%5Bstatus%5D=open");
@@ -678,10 +688,10 @@ test("node preview preserves cookie params and form encoded bodies", () => {
     });
 
     assert.equal(preview.verification?.status, "passed");
-    const indexFile = getFileContent(preview, "src/index.ts");
-    assert.match(indexFile, /const formBody = new URLSearchParams\(\);/);
-    assert.match(indexFile, /requestHeaders\["Content-Type"\] = "application\/x-www-form-urlencoded"/);
-    assert.match(indexFile, /cookiePairs\.push\(`sessionId=/);
+    const operationsFile = getFileContent(preview, "src/api/operations.ts");
+    assert.match(operationsFile, /const formBody = new URLSearchParams\(\);/);
+    assert.match(operationsFile, /requestHeaders\["Content-Type"\] = "application\/x-www-form-urlencoded"/);
+    assert.match(operationsFile, /cookiePairs\.push\(`sessionId=/);
 });
 
 test("previews render multipart binary fields as file uploads", () => {
@@ -749,11 +759,12 @@ test("previews render multipart binary fields as file uploads", () => {
             },
         },
     });
-    const nodeIndex = getFileContent(nodePreview, "src/index.ts");
-    assert.match(nodeIndex, /"file": z\.string\(\)\.describe\("Base64-encoded file content\."\)/);
-    assert.match(nodeIndex, /const fileBytes = Buffer\.from\(String\(args\["file"\]\), "base64"\);/);
-    assert.match(nodeIndex, /formBody\.append\("file", new Blob\(\[fileBytes\]\), "file"\);/);
-    assert.match(nodeIndex, /formBody\.append\("label", String\(args\["label"\]\)\);/);
+    const nodeServer = getFileContent(nodePreview, "src/mcp/server.ts");
+    const nodeOperations = getFileContent(nodePreview, "src/api/operations.ts");
+    assert.match(nodeServer, /"file": z\.string\(\)\.describe\("Base64-encoded file content\."\)/);
+    assert.match(nodeOperations, /const fileBytes = Buffer\.from\(String\(args\["file"\]\), "base64"\);/);
+    assert.match(nodeOperations, /formBody\.append\("file", new Blob\(\[fileBytes\]\), "file"\);/);
+    assert.match(nodeOperations, /formBody\.append\("label", String\(args\["label"\]\)\);/);
 
     const pythonPreview = createPreviewResponse({
         ...baseRequest,

@@ -51,7 +51,17 @@ function verifyNoTemplateArtifacts(project: GeneratedProject): VerificationCheck
 
 function verifyProjectShape(project: GeneratedProject): VerificationCheck {
     const requiredFiles = project.manifest.language === "node"
-        ? ["package.json", "tsconfig.json", "src/index.ts", "makemcp.manifest.json"]
+        ? [
+            "package.json",
+            "tsconfig.json",
+            "src/index.ts",
+            "src/config.ts",
+            "src/mcp/server.ts",
+            "src/api/client.ts",
+            "src/api/operations.ts",
+            "src/api/serialization.ts",
+            "makemcp.manifest.json",
+        ]
         : ["pyproject.toml", "src/server.py", "makemcp.manifest.json"];
 
     const missing = requiredFiles.filter((filePath) => !project.files.has(filePath));

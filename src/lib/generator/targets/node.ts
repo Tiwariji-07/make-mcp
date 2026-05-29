@@ -130,14 +130,53 @@ function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
     }
 }
 
-function renderNodeTool(tool: GenerationTool, plan: GenerationPlan): string {
-    const authStrategy = getNodeAuthStrategy(plan.auth);
+function renderNodeOperation(tool: GenerationTool): string {
     const pathParams = tool.params.filter((param) => param.location === "path");
     const queryParams = tool.params.filter((param) => param.location === "query");
     const headerParams = tool.params.filter((param) => param.location === "header");
     const cookieParams = tool.params.filter((param) => param.location === "cookie");
     const bodyRender = renderNodeRequestBody(tool.requestBody);
 
+    const pathReplacements = pathParams
+        .map((param) => `  path = path.replace(${JSON.stringify(`{${param.sourceName}}`)}, serializePathParameter(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}));`)
+        .join("\n");
+
+    const queryLines = queryParams
+        .map((param) => `  appendSerializedParameter(queryString, ${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
+        .join("\n");
+
+    const headerLines = headerParams
+        .map((param) => `  if (args[${JSON.stringify(param.argName)}] !== undefined) requestHeaders[${JSON.stringify(param.sourceName)}] = serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
+        .join("\n");
+
+    const cookieLines = cookieParams
+        .map((param) => `  if (args[${JSON.stringify(param.argName)}] !== undefined) cookiePairs.push(\`${encodeURIComponent(param.sourceName)}=\${encodeURIComponent(serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}))}\`);`)
+        .join("\n");
+
+    const bodySetup = bodyRender.setup ? `${bodyRender.setup.replaceAll("      ", "  ")}\n` : "";
+    const bodyHeaderLines = bodyRender.headerLines.map((line) => line.replace("      ", "  ")).join("\n");
+
+    return `async function(args: Record<string, unknown>): Promise<string> {
+  let path = ${JSON.stringify(tool.path)};
+${pathReplacements ? `${pathReplacements}\n` : ""}  const queryString = new URLSearchParams();
+${queryLines ? `${queryLines}\n` : ""}  applyAuthQuery(queryString);
+
+  const requestHeaders: Record<string, string> = {};
+  const cookiePairs: string[] = [];
+${headerLines ? `${headerLines}\n` : ""}${cookieLines ? `${cookieLines}\n` : ""}${bodySetup}${bodyHeaderLines ? `${bodyHeaderLines}\n` : ""}  if (cookiePairs.length > 0) {
+    requestHeaders["Cookie"] = cookiePairs.join("; ");
+  }
+
+  return executeApiRequest({
+    path,
+    method: ${JSON.stringify(tool.method)},
+    query: queryString,
+    headers: requestHeaders,
+${bodyRender.bodyOption}  });
+}`;
+}
+
+function renderNodeServerTool(tool: GenerationTool, operationIndex: number): string {
     const schemaFields = tool.params
         .map((param) => {
             let line = `    ${JSON.stringify(param.argName)}: ${toZodType(param.type, param.schema)}`;
@@ -151,25 +190,6 @@ function renderNodeTool(tool: GenerationTool, plan: GenerationPlan): string {
         })
         .join("\n");
 
-    const pathReplacements = pathParams
-        .map((param) => `      url = url.replace(${JSON.stringify(`{${param.sourceName}}`)}, serializePathParameter(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}));`)
-        .join("\n");
-
-    const queryLines = queryParams
-        .map((param) => `      appendSerializedParameter(queryString, ${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
-        .join("\n");
-
-    const headerLines = headerParams
-        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) requestHeaders[${JSON.stringify(param.sourceName)}] = serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)});`)
-        .join("\n");
-
-    const cookieLines = cookieParams
-        .map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) cookiePairs.push(\`${encodeURIComponent(param.sourceName)}=\${encodeURIComponent(serializeParameterValue(${JSON.stringify(param.sourceName)}, args[${JSON.stringify(param.argName)}], ${renderNodeSerializationOptions(param)}))}\`);`)
-        .join("\n");
-
-    const bodySetup = bodyRender.setup ? `${bodyRender.setup}\n` : "";
-    const bodyHeaderLines = bodyRender.headerLines.join("\n");
-
     return `server.tool(
   ${JSON.stringify(tool.displayName)},
   ${toJsStringLiteral(tool.description)},
@@ -178,37 +198,7 @@ ${schemaFields}
   },
   async (args: Record<string, unknown>) => {
     try {
-      let url = \`\${API_BASE_URL}${tool.path}\`;
-${pathReplacements ? `${pathReplacements}\n` : ""}      const queryString = new URLSearchParams();
-${queryLines ? `${queryLines}\n` : ""}${authStrategy.applyQuery ? `${authStrategy.applyQuery}\n` : ""}      if (queryString.toString()) {
-        url += \`?\${queryString.toString()}\`;
-      }
-
-      const requestHeaders: Record<string, string> = getHeaders();
-      const cookiePairs: string[] = [];
-${headerLines ? `${headerLines}\n` : ""}${cookieLines ? `${cookieLines}\n` : ""}${bodySetup}${bodyHeaderLines ? `${bodyHeaderLines}\n` : ""}      if (cookiePairs.length > 0) {
-        requestHeaders["Cookie"] = cookiePairs.join("; ");
-      }
-
-      const response = await fetch(url, {
-        method: ${JSON.stringify(tool.method)},
-        headers: requestHeaders,
-${bodyRender.bodyOption}      });
-
-      if (!response.ok) {
-        throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
-      }
-
-      const responseText = await response.text();
-      const text = (() => {
-        if (!responseText) return "OK";
-        try {
-          return JSON.stringify(JSON.parse(responseText), null, 2);
-        } catch {
-          return responseText;
-        }
-      })();
-
+      const text = await operations[${operationIndex}](args);
       return { content: [{ type: "text", text }] };
     } catch (error) {
       return {
@@ -221,45 +211,145 @@ ${bodyRender.bodyOption}      });
 }
 
 function renderIndex(plan: GenerationPlan): string {
-    const authStrategy = getNodeAuthStrategy(plan.auth);
     const transportStrategy = getNodeTransportStrategy(plan);
+    const bootstrap = transportStrategy.bootstrap
+        .replace(
+            `new URL(req.url || "/", ${JSON.stringify(`http://${plan.server.host}:${plan.server.port}`)})`,
+            "new URL(req.url || \"/\", `http://${MCP_SERVER_CONFIG.host}:${MCP_SERVER_CONFIG.port}`)"
+        )
+        .replaceAll(
+            `httpServer.listen(${plan.server.port}, ${JSON.stringify(plan.server.host)},`,
+            "httpServer.listen(MCP_SERVER_CONFIG.port, MCP_SERVER_CONFIG.host,"
+        );
 
     return `import "dotenv/config";
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 ${transportStrategy.imports}
-import { z } from "zod";
+import { MCP_SERVER_CONFIG } from "./config.js";
+import { createServer } from "./mcp/server.js";
 
-const API_BASE_URL = process.env.API_BASE_URL || ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")};
-${authStrategy.envDeclarations}
+async function main() {
+${bootstrap}
+}
 
-type SerializedParameterOptions = {
+main().catch(console.error);
+`;
+}
+
+function renderConfig(plan: GenerationPlan): string {
+    const authStrategy = getNodeAuthStrategy(plan.auth);
+    const authDeclarations = authStrategy.envDeclarations
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => `export ${line}`)
+        .join("\n");
+
+    return `import "dotenv/config";
+
+export const API_BASE_URL = process.env.API_BASE_URL || ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")};
+${authDeclarations ? `${authDeclarations}\n` : ""}
+export const MCP_SERVER_CONFIG = {
+  name: ${JSON.stringify(plan.server.name)},
+  version: ${JSON.stringify(plan.server.version)},
+  host: ${JSON.stringify(plan.server.host)},
+  port: ${plan.server.port},
+} as const;
+`;
+}
+
+function renderNodeAuthImports(plan: GenerationPlan): string {
+    switch (plan.auth.strategy) {
+        case "apiKeyHeader":
+        case "apiKeyQuery":
+            return "import { API_BASE_URL, API_KEY } from \"../config.js\";";
+        case "bearer":
+            return "import { API_BASE_URL, BEARER_TOKEN } from \"../config.js\";";
+        case "basic":
+            return "import { API_BASE_URL, BASIC_PASSWORD, BASIC_USERNAME } from \"../config.js\";";
+        default:
+            return "import { API_BASE_URL } from \"../config.js\";";
+    }
+}
+
+function renderClient(plan: GenerationPlan): string {
+    const authStrategy = getNodeAuthStrategy(plan.auth);
+
+    return `${renderNodeAuthImports(plan)}
+
+export type ApiRequest = {
+  path: string;
+  method: string;
+  query?: URLSearchParams;
+  headers?: Record<string, string>;
+  body?: BodyInit;
+};
+
+export function applyAuthQuery(queryString: URLSearchParams) {
+${authStrategy.applyQuery ? authStrategy.applyQuery.replaceAll("      ", "  ") : "  void queryString;"}
+}
+
+export function getHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+${authStrategy.applyHeaders ? `${authStrategy.applyHeaders}\n` : ""}  return headers;
+}
+
+export async function executeApiRequest(request: ApiRequest): Promise<string> {
+  let url = \`\${API_BASE_URL}\${request.path}\`;
+  if (request.query?.toString()) {
+    url += \`?\${request.query.toString()}\`;
+  }
+
+  const response = await fetch(url, {
+    method: request.method,
+    headers: { ...getHeaders(), ...request.headers },
+    body: request.body,
+  });
+
+  if (!response.ok) {
+    throw new Error(\`HTTP \${response.status}: \${await response.text()}\`);
+  }
+
+  const responseText = await response.text();
+  if (!responseText) return "OK";
+
+  try {
+    return JSON.stringify(JSON.parse(responseText), null, 2);
+  } catch {
+    return responseText;
+  }
+}
+`;
+}
+
+function renderSerialization(): string {
+    return `export type SerializedParameterOptions = {
   location: "path" | "query" | "header" | "cookie";
   style?: string;
   explode?: boolean;
 };
 
-function defaultParameterStyle(location: SerializedParameterOptions["location"]): string {
+export function defaultParameterStyle(location: SerializedParameterOptions["location"]): string {
   if (location === "path" || location === "header") return "simple";
   return "form";
 }
 
-function shouldExplode(style: string, explode?: boolean): boolean {
+export function shouldExplode(style: string, explode?: boolean): boolean {
   return explode ?? style === "form";
 }
 
-function scalarToString(value: unknown): string {
+export function scalarToString(value: unknown): string {
   if (value === null || value === undefined) return "";
   if (typeof value === "string") return value;
   if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
   return JSON.stringify(value);
 }
 
-function objectEntries(value: unknown): [string, unknown][] {
+export function objectEntries(value: unknown): [string, unknown][] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
   return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
 }
 
-function serializeParameterValue(name: string, value: unknown, options: SerializedParameterOptions): string {
+export function serializeParameterValue(name: string, value: unknown, options: SerializedParameterOptions): string {
   const style = options.style || defaultParameterStyle(options.location);
   const explode = shouldExplode(style, options.explode);
   const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
@@ -279,7 +369,7 @@ function serializeParameterValue(name: string, value: unknown, options: Serializ
   return scalarToString(value);
 }
 
-function serializePathParameter(name: string, value: unknown, options: SerializedParameterOptions): string {
+export function serializePathParameter(name: string, value: unknown, options: SerializedParameterOptions): string {
   const style = options.style || "simple";
   const explode = shouldExplode(style, options.explode);
   const encode = (entry: unknown) => encodeURIComponent(scalarToString(entry));
@@ -323,7 +413,7 @@ function serializePathParameter(name: string, value: unknown, options: Serialize
   return encodedValue;
 }
 
-function appendSerializedParameter(
+export function appendSerializedParameter(
   params: URLSearchParams,
   name: string,
   value: unknown,
@@ -359,28 +449,39 @@ function appendSerializedParameter(
 
   params.append(name, scalarToString(value));
 }
-
-function getHeaders(): Record<string, string> {
-  const headers: Record<string, string> = {};
-${authStrategy.applyHeaders ? `${authStrategy.applyHeaders}\n` : ""}  return headers;
+`;
 }
 
-function createServer() {
+function renderOperations(plan: GenerationPlan): string {
+    return `import { applyAuthQuery, executeApiRequest } from "./client.js";
+import {
+  appendSerializedParameter,
+  serializeParameterValue,
+  serializePathParameter,
+} from "./serialization.js";
+
+export const operations = [
+${plan.tools.map((tool) => `  ${renderNodeOperation(tool)}`).join(",\n")}
+] as const;
+`;
+}
+
+function renderServer(plan: GenerationPlan): string {
+    return `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { MCP_SERVER_CONFIG } from "../config.js";
+import { operations } from "../api/operations.js";
+
+export function createServer() {
   const server = new McpServer({
-    name: ${JSON.stringify(plan.server.name)},
-    version: ${JSON.stringify(plan.server.version)},
+    name: MCP_SERVER_CONFIG.name,
+    version: MCP_SERVER_CONFIG.version,
   });
 
-${plan.tools.map((tool) => renderNodeTool(tool, plan)).join("\n\n")}
+${plan.tools.map((tool, index) => renderNodeServerTool(tool, index)).join("\n\n")}
 
   return server;
 }
-
-async function main() {
-${transportStrategy.bootstrap}
-}
-
-main().catch(console.error);
 `;
 }
 
@@ -517,6 +618,11 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
 
     files.set(".env.example", getEnvExample(plan));
     files.set("src/index.ts", renderIndex(plan));
+    files.set("src/config.ts", renderConfig(plan));
+    files.set("src/mcp/server.ts", renderServer(plan));
+    files.set("src/api/client.ts", renderClient(plan));
+    files.set("src/api/operations.ts", renderOperations(plan));
+    files.set("src/api/serialization.ts", renderSerialization());
     files.set("makemcp.manifest.json", JSON.stringify(manifest, null, 2));
 
     if (plan.features.documentation) {

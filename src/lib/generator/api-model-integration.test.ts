@@ -147,12 +147,12 @@ test("generator request preserves apiModel and plans from canonical operation me
     });
 
     const preview = createPreviewResponse(payload);
-    const indexFile = preview.files.find((file) => file.name === "src/index.ts")?.content || "";
+    const operationsFile = preview.files.find((file) => file.name === "src/api/operations.ts")?.content || "";
     const envFile = preview.files.find((file) => file.name === ".env.example")?.content || "";
 
     assert.match(envFile, /API_BASE_URL=https:\/\/canonical\.example\.com/);
-    assert.match(indexFile, /url = url\.replace\("\{id\}"/);
-    assert.match(indexFile, /requestHeaders\["Content-Type"\] = "application\/json"/);
+    assert.match(operationsFile, /path = path\.replace\("\{id\}"/);
+    assert.match(operationsFile, /requestHeaders\["Content-Type"\] = "application\/json"/);
 });
 
 test("openapi model preserves rich OpenAPI 3 operation metadata", () => {
