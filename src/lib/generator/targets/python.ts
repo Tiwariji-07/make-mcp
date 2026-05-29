@@ -163,6 +163,10 @@ function renderPythonAuthRequirements(requirements?: ToolAuthRequirementPlan[]):
     return `[\n        ${renderedRequirements.join(",\n        ")}\n    ]`;
 }
 
+function getPythonSignatureParams(tool: GenerationTool): GenerationTool["params"] {
+    return [...tool.params].sort((left, right) => Number(right.required) - Number(left.required));
+}
+
 function renderPythonOperation(tool: GenerationTool): string {
     const pathParams = tool.params.filter((param) => param.location === "path");
     const queryParams = tool.params.filter((param) => param.location === "query");
@@ -170,7 +174,7 @@ function renderPythonOperation(tool: GenerationTool): string {
     const cookieParams = tool.params.filter((param) => param.location === "cookie");
     const bodyRender = renderPythonRequestBody(tool.requestBody);
 
-    const signature = tool.params
+    const signature = getPythonSignatureParams(tool)
         .map((param) => `${param.argName}: ${toPythonType(param.type)}${param.required ? "" : " | None = None"}`)
         .join(", ");
 
@@ -218,10 +222,10 @@ ${cookieLines ? `${cookieLines}\n` : ""}${bodyRender.setup ? `${bodyRender.setup
 }
 
 function renderPythonServerTool(tool: GenerationTool): string {
-    const signature = tool.params
+    const signature = getPythonSignatureParams(tool)
         .map((param) => `${param.argName}: ${toPythonType(param.type)}${param.required ? "" : " | None = None"}`)
         .join(", ");
-    const args = tool.params.map((param) => param.argName).join(", ");
+    const args = getPythonSignatureParams(tool).map((param) => param.argName).join(", ");
 
     return `@mcp.tool(name=${toPythonStringLiteral(tool.displayName)})
 def ${tool.functionName}(${signature}) -> dict:
@@ -605,16 +609,391 @@ ${ports}    restart: unless-stopped
 `;
 }
 
+function getPythonTestSchemaType(schema?: Record<string, unknown>): string | undefined {
+    const type = schema?.type;
+    if (typeof type === "string") return type;
+    if (Array.isArray(type)) return type.find((entry): entry is string => typeof entry === "string");
+    return undefined;
+}
+
+function getPythonTestSampleValue(param: GenerationTool["params"][number]): unknown {
+    const schemaType = getPythonTestSchemaType(param.schema);
+
+    if (param.schema?.format === "binary" || schemaType === "file") return "ZmlsZSBjb250ZW50";
+    if (schemaType === "array") return ["alpha", "beta"];
+    if (schemaType === "object") return { status: "open", owner: "team" };
+    if (schemaType === "integer" || schemaType === "number") return 42;
+    if (schemaType === "boolean") return true;
+
+    return `${param.argName}-value`;
+}
+
+function toPythonLiteral(value: unknown): string {
+    if (value === null || value === undefined) return "None";
+    if (typeof value === "string") return JSON.stringify(value);
+    if (typeof value === "number") return String(value);
+    if (typeof value === "boolean") return value ? "True" : "False";
+    if (Array.isArray(value)) return `[${value.map(toPythonLiteral).join(", ")}]`;
+    if (typeof value === "object") {
+        return `{${Object.entries(value as Record<string, unknown>)
+            .map(([key, entryValue]) => `${JSON.stringify(key)}: ${toPythonLiteral(entryValue)}`)
+            .join(", ")}}`;
+    }
+    return JSON.stringify(String(value));
+}
+
+function pythonScalarToExpectedString(value: unknown): string {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "boolean") return value ? "true" : "false";
+    if (typeof value === "string" || typeof value === "number") return String(value);
+    return String(value);
+}
+
+function pythonExpectedObjectEntries(value: unknown): [string, unknown][] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
+}
+
+function pythonExpectedExplode(style: string, explode?: boolean): boolean {
+    return explode ?? style === "form";
+}
+
+function pythonExpectedSerializedParameterValue(
+    name: string,
+    value: unknown,
+    options: { location: string; style?: string; explode?: boolean }
+): string {
+    const style = options.style || (options.location === "path" || options.location === "header" ? "simple" : "form");
+    const explode = pythonExpectedExplode(style, options.explode);
+    const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
+
+    if (Array.isArray(value)) {
+        return value.map(pythonScalarToExpectedString).join(delimiter);
+    }
+
+    const entries = pythonExpectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (explode) {
+            return entries.map(([key, entryValue]) => `${key}=${pythonScalarToExpectedString(entryValue)}`).join(delimiter);
+        }
+        return entries.flatMap(([key, entryValue]) => [key, pythonScalarToExpectedString(entryValue)]).join(delimiter);
+    }
+
+    return pythonScalarToExpectedString(value);
+}
+
+function pythonExpectedPathParameter(
+    name: string,
+    value: unknown,
+    options: { style?: string; explode?: boolean }
+): string {
+    const style = options.style || "simple";
+    const explode = pythonExpectedExplode(style, options.explode);
+    const encode = (entry: unknown) => encodeURIComponent(pythonScalarToExpectedString(entry));
+    const encodedName = encodeURIComponent(name);
+
+    if (Array.isArray(value)) {
+        const encodedValues = value.map(encode);
+        if (style === "label") return `.${encodedValues.join(".")}`;
+        if (style === "matrix") {
+            return explode
+                ? encodedValues.map((entry) => `;${encodedName}=${entry}`).join("")
+                : `;${encodedName}=${encodedValues.join(",")}`;
+        }
+        return encodedValues.join(",");
+    }
+
+    const entries = pythonExpectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (style === "label") {
+            const values = explode
+                ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
+                : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+            return `.${values.join(".")}`;
+        }
+        if (style === "matrix") {
+            if (explode) {
+                return entries.map(([key, entryValue]) => `;${encodeURIComponent(key)}=${encode(entryValue)}`).join("");
+            }
+            const values = entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+            return `;${encodedName}=${values.join(",")}`;
+        }
+        const values = explode
+            ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
+            : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+        return values.join(",");
+    }
+
+    const encodedValue = encode(value);
+    if (style === "label") return `.${encodedValue}`;
+    if (style === "matrix") return `;${encodedName}=${encodedValue}`;
+    return encodedValue;
+}
+
+function pythonExpectedQueryEntries(
+    name: string,
+    value: unknown,
+    options: { style?: string; explode?: boolean }
+): [string, string][] {
+    const style = options.style || "form";
+    const explode = pythonExpectedExplode(style, options.explode);
+
+    if (Array.isArray(value)) {
+        if (style === "form" && explode) {
+            return value.map((entry) => [name, pythonScalarToExpectedString(entry)]);
+        }
+        return [[name, pythonExpectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
+    }
+
+    const entries = pythonExpectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (style === "deepObject") {
+            return entries.map(([key, entryValue]) => [`${name}[${key}]`, pythonScalarToExpectedString(entryValue)]);
+        }
+        if (style === "form" && explode) {
+            return entries.map(([key, entryValue]) => [key, pythonScalarToExpectedString(entryValue)]);
+        }
+        return [[name, pythonExpectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
+    }
+
+    return [[name, pythonScalarToExpectedString(value)]];
+}
+
+function getPythonTestArgs(tool: GenerationTool): Record<string, unknown> {
+    return Object.fromEntries(tool.params.map((param) => [param.argName, getPythonTestSampleValue(param)]));
+}
+
+function getPythonExpectedPath(tool: GenerationTool, args: Record<string, unknown>): string {
+    return tool.params
+        .filter((param) => param.location === "path")
+        .reduce((path, param) => {
+            const replacement = pythonExpectedPathParameter(param.sourceName, args[param.argName], {
+                style: param.style,
+                explode: param.explode,
+            });
+            return path.replace(`{${param.sourceName}}`, replacement);
+        }, tool.path);
+}
+
+function getPythonExpectedQueryEntries(tool: GenerationTool, args: Record<string, unknown>): [string, string][] {
+    return tool.params
+        .filter((param) => param.location === "query")
+        .flatMap((param) => pythonExpectedQueryEntries(param.sourceName, args[param.argName], {
+            style: param.style,
+            explode: param.explode,
+        }));
+}
+
+function getPythonExpectedJsonBody(tool: GenerationTool, args: Record<string, unknown>): unknown {
+    const requestBody = tool.requestBody;
+    if (!requestBody) return undefined;
+
+    if (requestBody.contentKind === "rawJsonObject" || requestBody.contentKind === "rawArray") {
+        return args[requestBody.params[0]?.argName || "body"];
+    }
+
+    return Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
+}
+
+function renderPythonAuthEnvAssignments(plan: GenerationPlan): string {
+    const assignments: string[] = [`    monkeypatch.setenv("API_BASE_URL", "https://unit.example.test")`];
+
+    for (const auth of collectAuthSchemes(plan)) {
+        if (auth.apiKeyEnvVar) assignments.push(`    monkeypatch.setenv(${JSON.stringify(auth.apiKeyEnvVar)}, "test-api-key")`);
+        if (auth.bearerTokenEnvVar) assignments.push(`    monkeypatch.setenv(${JSON.stringify(auth.bearerTokenEnvVar)}, "test-bearer-token")`);
+        if (auth.basicUsernameEnvVar) assignments.push(`    monkeypatch.setenv(${JSON.stringify(auth.basicUsernameEnvVar)}, "test-user")`);
+        if (auth.basicPasswordEnvVar) assignments.push(`    monkeypatch.setenv(${JSON.stringify(auth.basicPasswordEnvVar)}, "test-pass")`);
+    }
+
+    return assignments.join("\n");
+}
+
+function renderPythonOperationBehaviorTest(tool: GenerationTool): string {
+    const args = getPythonTestArgs(tool);
+    const expectedPath = getPythonExpectedPath(tool, args);
+    const expectedQueryEntries = getPythonExpectedQueryEntries(tool, args);
+    const headerParams = tool.params.filter((param) => param.location === "header");
+    const cookieParams = tool.params.filter((param) => param.location === "cookie");
+    const requestBody = tool.requestBody;
+    const assertions: string[] = [
+        `    assert call["method"] == ${JSON.stringify(tool.method)}`,
+        `    assert call["url"] == "https://unit.example.test${expectedPath}"`,
+        `    for item in ${toPythonLiteral(expectedQueryEntries)}:`,
+        `        assert tuple(item) in call["params"]`,
+    ];
+
+    for (const param of headerParams) {
+        assertions.push(`    assert call["headers"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(pythonExpectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "header", style: param.style, explode: param.explode }))}`);
+    }
+
+    for (const param of cookieParams) {
+        assertions.push(`    assert call["cookies"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(pythonExpectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "cookie", style: param.style, explode: param.explode }))}`);
+    }
+
+    if (requestBody?.contentKind === "flattenedObject" || requestBody?.contentKind === "rawJsonObject" || requestBody?.contentKind === "rawArray") {
+        assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
+        assertions.push(`    assert call["json"] == ${toPythonLiteral(getPythonExpectedJsonBody(tool, args))}`);
+    } else if (requestBody?.contentKind === "formUrlencoded") {
+        const entries = Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
+        assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
+        assertions.push(`    assert call["data"] == ${toPythonLiteral(entries)}`);
+    } else if (requestBody?.contentKind === "multipart") {
+        for (const param of requestBody.params) {
+            if (isMultipartBinaryParam(param)) {
+                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}][0] == ${JSON.stringify(param.sourceName)}`);
+                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}][1] == b"file content"`);
+                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}][2] == "application/octet-stream"`);
+            } else {
+                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}] == (None, ${JSON.stringify(pythonScalarToExpectedString(args[param.argName]))})`);
+            }
+        }
+    } else if (requestBody?.contentKind === "text") {
+        assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
+        assertions.push(`    assert call["content"] == ${JSON.stringify(pythonScalarToExpectedString(args[requestBody.params[0]?.argName || "body"]))}`);
+    } else if (requestBody?.contentKind === "binary") {
+        assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
+        assertions.push(`    assert call["content"] == args[${JSON.stringify(requestBody.params[0]?.argName || "body")}]`);
+    }
+
+    return `def test_${tool.functionName}_operation_builds_api_request(monkeypatch) -> None:
+    api_client, operations, _serialization = load_modules(monkeypatch)
+    fake_client = FakeClient()
+    monkeypatch.setattr(api_client, "client", fake_client)
+    args = ${toPythonLiteral(args)}
+
+    operations.${tool.functionName}_operation(**args)
+
+    call = fake_client.calls[-1]
+${assertions.join("\n")}`;
+}
+
 function renderPythonTest(plan: GenerationPlan): string {
-    return `import json
+    return `from __future__ import annotations
+
+import importlib
+import sys
 from pathlib import Path
 
+import pytest
 
-def test_manifest_metadata() -> None:
-    manifest_path = Path(__file__).resolve().parents[1] / "makemcp.manifest.json"
-    manifest = json.loads(manifest_path.read_text())
-    assert manifest["serverName"] == ${JSON.stringify(plan.server.name)}
-    assert manifest["toolCount"] == ${plan.tools.length}
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+sys.path.insert(0, str(SRC_DIR))
+
+
+class FakeResponse:
+    def __init__(self, *, status_code: int = 200, text: str = '{"ok": true}', json_body: object | None = None) -> None:
+        self.status_code = status_code
+        self.text = text
+        self.headers = {"content-type": "application/json"}
+        self._json_body = {"ok": True} if json_body is None else json_body
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}: {self.text}")
+
+    def json(self) -> object:
+        return self._json_body
+
+
+class FakeClient:
+    def __init__(self, response: FakeResponse | None = None) -> None:
+        self.calls: list[dict[str, object]] = []
+        self.response = response or FakeResponse()
+
+    def request(self, **kwargs: object) -> FakeResponse:
+        self.calls.append(kwargs)
+        return self.response
+
+
+def load_modules(monkeypatch):
+${renderPythonAuthEnvAssignments(plan)}
+    import config
+    import api_client
+    import operations
+    import serialization
+
+    importlib.reload(config)
+    importlib.reload(api_client)
+    importlib.reload(operations)
+    importlib.reload(serialization)
+    return api_client, operations, serialization
+
+
+def test_request_api_constructs_urls_and_reports_http_errors(monkeypatch) -> None:
+    api_client, _operations, _serialization = load_modules(monkeypatch)
+    fake_client = FakeClient()
+    monkeypatch.setattr(api_client, "client", fake_client)
+
+    api_client.request_api(
+        method="GET",
+        path="/reports/alpha",
+        headers={"Accept": "application/json"},
+        params=[("q", "a b")],
+        cookies={"session": "cookie-value"},
+    )
+
+    call = fake_client.calls[-1]
+    assert call["method"] == "GET"
+    assert call["url"] == "https://unit.example.test/reports/alpha"
+    assert call["headers"] == {"Accept": "application/json"}
+    assert call["params"] == [("q", "a b")]
+    assert call["cookies"] == {"session": "cookie-value"}
+
+    with pytest.raises(RuntimeError, match="HTTP 418: teapot"):
+        api_client.response_to_tool_result(FakeResponse(status_code=418, text="teapot"))
+
+
+def test_serialization_helpers_encode_paths_and_queries(monkeypatch) -> None:
+    _api_client, _operations, serialization = load_modules(monkeypatch)
+
+    assert serialization.serialize_path_parameter(
+        "ids",
+        ["a", "b"],
+        {"location": "path", "style": "matrix", "explode": True},
+    ) == ";ids=a;ids=b"
+
+    params: list[tuple[str, str]] = []
+    serialization.append_serialized_parameter(
+        params,
+        "filter",
+        {"status": "open"},
+        {"location": "query", "style": "deepObject", "explode": True},
+    )
+    serialization.append_serialized_parameter(
+        params,
+        "tags",
+        ["a", "b"],
+        {"location": "query", "style": "form", "explode": True},
+    )
+    assert params == [("filter[status]", "open"), ("tags", "a"), ("tags", "b")]
+
+
+def test_apply_auth_injects_headers_query_parameters_and_cookies(monkeypatch) -> None:
+    api_client, _operations, _serialization = load_modules(monkeypatch)
+    params: list[tuple[str, str]] = []
+    headers: dict[str, str] = {}
+    cookies: dict[str, str] = {}
+
+    api_client.apply_auth(
+        params=params,
+        headers=headers,
+        cookies=cookies,
+        auth_requirements=[{
+            "schemes": [
+                {"type": "apiKey", "in": "header", "name": "X-API-Key", "value": "key"},
+                {"type": "apiKey", "in": "query", "name": "api_key", "value": "query-key"},
+                {"type": "apiKey", "in": "cookie", "name": "session", "value": "cookie-value"},
+            ],
+        }],
+    )
+
+    assert headers["X-API-Key"] == "key"
+    assert ("api_key", "query-key") in params
+    assert cookies["session"] == "cookie-value"
+
+
+${plan.tools.map(renderPythonOperationBehaviorTest).join("\n\n")}
 `;
 }
 
@@ -666,7 +1045,7 @@ sources = ["src"]
     }
 
     if (plan.features.tests) {
-        files.set("tests/test_manifest.py", renderPythonTest(plan));
+        files.set("tests/test_behavior.py", renderPythonTest(plan));
     }
 
     return { manifest, files };

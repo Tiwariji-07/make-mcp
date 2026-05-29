@@ -645,18 +645,343 @@ ${ports}    restart: unless-stopped
 `;
 }
 
+function getSchemaType(schema?: Record<string, unknown>): string | undefined {
+    const type = schema?.type;
+    if (typeof type === "string") return type;
+    if (Array.isArray(type)) return type.find((entry): entry is string => typeof entry === "string");
+    return undefined;
+}
+
+function getNodeTestSampleValue(param: GenerationTool["params"][number]): unknown {
+    const schemaType = getSchemaType(param.schema);
+
+    if (param.schema?.format === "binary" || schemaType === "file") return "ZmlsZSBjb250ZW50";
+    if (schemaType === "array") return ["alpha", "beta"];
+    if (schemaType === "object") return { status: "open", owner: "team" };
+    if (schemaType === "integer" || schemaType === "number") return 42;
+    if (schemaType === "boolean") return true;
+
+    return `${param.argName}-value`;
+}
+
+function scalarToExpectedString(value: unknown): string {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value;
+    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
+    return JSON.stringify(value);
+}
+
+function expectedObjectEntries(value: unknown): [string, unknown][] {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+    return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
+}
+
+function expectedExplode(style: string, explode?: boolean): boolean {
+    return explode ?? style === "form";
+}
+
+function expectedSerializedParameterValue(
+    name: string,
+    value: unknown,
+    options: { location: string; style?: string; explode?: boolean }
+): string {
+    const style = options.style || (options.location === "path" || options.location === "header" ? "simple" : "form");
+    const explode = expectedExplode(style, options.explode);
+    const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
+
+    if (Array.isArray(value)) {
+        return value.map(scalarToExpectedString).join(delimiter);
+    }
+
+    const entries = expectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (explode) {
+            return entries.map(([key, entryValue]) => `${key}=${scalarToExpectedString(entryValue)}`).join(delimiter);
+        }
+        return entries.flatMap(([key, entryValue]) => [key, scalarToExpectedString(entryValue)]).join(delimiter);
+    }
+
+    return scalarToExpectedString(value);
+}
+
+function expectedPathParameter(
+    name: string,
+    value: unknown,
+    options: { style?: string; explode?: boolean }
+): string {
+    const style = options.style || "simple";
+    const explode = expectedExplode(style, options.explode);
+    const encode = (entry: unknown) => encodeURIComponent(scalarToExpectedString(entry));
+    const encodedName = encodeURIComponent(name);
+
+    if (Array.isArray(value)) {
+        const encodedValues = value.map(encode);
+        if (style === "label") return `.${encodedValues.join(".")}`;
+        if (style === "matrix") {
+            return explode
+                ? encodedValues.map((entry) => `;${encodedName}=${entry}`).join("")
+                : `;${encodedName}=${encodedValues.join(",")}`;
+        }
+        return encodedValues.join(",");
+    }
+
+    const entries = expectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (style === "label") {
+            const values = explode
+                ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
+                : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+            return `.${values.join(".")}`;
+        }
+        if (style === "matrix") {
+            if (explode) {
+                return entries.map(([key, entryValue]) => `;${encodeURIComponent(key)}=${encode(entryValue)}`).join("");
+            }
+            const values = entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+            return `;${encodedName}=${values.join(",")}`;
+        }
+        const values = explode
+            ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
+            : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
+        return values.join(",");
+    }
+
+    const encodedValue = encode(value);
+    if (style === "label") return `.${encodedValue}`;
+    if (style === "matrix") return `;${encodedName}=${encodedValue}`;
+    return encodedValue;
+}
+
+function expectedQueryEntries(
+    name: string,
+    value: unknown,
+    options: { style?: string; explode?: boolean }
+): [string, string][] {
+    const style = options.style || "form";
+    const explode = expectedExplode(style, options.explode);
+
+    if (Array.isArray(value)) {
+        if (style === "form" && explode) {
+            return value.map((entry) => [name, scalarToExpectedString(entry)]);
+        }
+        return [[name, expectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
+    }
+
+    const entries = expectedObjectEntries(value);
+    if (entries.length > 0) {
+        if (style === "deepObject") {
+            return entries.map(([key, entryValue]) => [`${name}[${key}]`, scalarToExpectedString(entryValue)]);
+        }
+        if (style === "form" && explode) {
+            return entries.map(([key, entryValue]) => [key, scalarToExpectedString(entryValue)]);
+        }
+        return [[name, expectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
+    }
+
+    return [[name, scalarToExpectedString(value)]];
+}
+
+function getNodeTestArgs(tool: GenerationTool): Record<string, unknown> {
+    return Object.fromEntries(tool.params.map((param) => [param.argName, getNodeTestSampleValue(param)]));
+}
+
+function getExpectedPath(tool: GenerationTool, args: Record<string, unknown>): string {
+    return tool.params
+        .filter((param) => param.location === "path")
+        .reduce((path, param) => {
+            const replacement = expectedPathParameter(param.sourceName, args[param.argName], {
+                style: param.style,
+                explode: param.explode,
+            });
+            return path.replace(`{${param.sourceName}}`, replacement);
+        }, tool.path);
+}
+
+function getExpectedQueryEntries(tool: GenerationTool, args: Record<string, unknown>): [string, string][] {
+    return tool.params
+        .filter((entry) => entry.location === "query")
+        .flatMap((param) => expectedQueryEntries(param.sourceName, args[param.argName], {
+            style: param.style,
+            explode: param.explode,
+        }));
+}
+
+function getExpectedJsonBody(tool: GenerationTool, args: Record<string, unknown>): unknown {
+    const requestBody = tool.requestBody;
+    if (!requestBody) return undefined;
+
+    if (requestBody.contentKind === "rawJsonObject" || requestBody.contentKind === "rawArray") {
+        return args[requestBody.params[0]?.argName || "body"];
+    }
+
+    return Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
+}
+
+function renderNodeAuthEnvAssignments(plan: GenerationPlan): string {
+    const assignments: string[] = [`process.env.API_BASE_URL = "https://unit.example.test";`];
+
+    for (const auth of collectAuthSchemes(plan)) {
+        if (auth.apiKeyEnvVar) assignments.push(`process.env.${auth.apiKeyEnvVar} = "test-api-key";`);
+        if (auth.bearerTokenEnvVar) assignments.push(`process.env.${auth.bearerTokenEnvVar} = "test-bearer-token";`);
+        if (auth.basicUsernameEnvVar) assignments.push(`process.env.${auth.basicUsernameEnvVar} = "test-user";`);
+        if (auth.basicPasswordEnvVar) assignments.push(`process.env.${auth.basicPasswordEnvVar} = "test-pass";`);
+    }
+
+    return assignments.join("\n");
+}
+
+function renderNodeOperationBehaviorTest(tool: GenerationTool, index: number): string {
+    const args = getNodeTestArgs(tool);
+    const expectedPath = getExpectedPath(tool, args);
+    const expectedQueryEntries = getExpectedQueryEntries(tool, args);
+    const headerParams = tool.params.filter((param) => param.location === "header");
+    const cookieParams = tool.params.filter((param) => param.location === "cookie");
+    const requestBody = tool.requestBody;
+    const assertions: string[] = [
+        `  assert.equal(call.init.method, ${JSON.stringify(tool.method)});`,
+        `  assert.equal(url.pathname, ${JSON.stringify(expectedPath)});`,
+    ];
+
+    for (const [name, value] of expectedQueryEntries) {
+        assertions.push(`  assert.ok(url.searchParams.getAll(${JSON.stringify(name)}).includes(${JSON.stringify(value)}));`);
+    }
+
+    for (const param of headerParams) {
+        assertions.push(`  assert.equal(headers[${JSON.stringify(param.sourceName)}], ${JSON.stringify(expectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "header", style: param.style, explode: param.explode }))});`);
+    }
+
+    for (const param of cookieParams) {
+        assertions.push(`  assert.ok((headers.Cookie || "").includes(${JSON.stringify(`${encodeURIComponent(param.sourceName)}=${encodeURIComponent(expectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "cookie", style: param.style, explode: param.explode }))}`)}));`);
+    }
+
+    if (requestBody?.contentKind === "flattenedObject" || requestBody?.contentKind === "rawJsonObject" || requestBody?.contentKind === "rawArray") {
+        assertions.push(`  assert.equal(headers["Content-Type"], ${JSON.stringify(requestBody.contentType)});`);
+        assertions.push(`  assert.deepEqual(JSON.parse(String(call.init.body)), ${JSON.stringify(getExpectedJsonBody(tool, args))});`);
+    } else if (requestBody?.contentKind === "formUrlencoded") {
+        const entries = requestBody.params.map((param) => [param.sourceName, scalarToExpectedString(args[param.argName])]);
+        assertions.push(`  assert.equal(headers["Content-Type"], ${JSON.stringify(requestBody.contentType)});`);
+        assertions.push(`  assert.ok(call.init.body instanceof URLSearchParams);`);
+        assertions.push(`  assert.deepEqual(Array.from((call.init.body as URLSearchParams).entries()), ${JSON.stringify(entries)});`);
+    } else if (requestBody?.contentKind === "multipart") {
+        assertions.push(`  assert.ok(call.init.body instanceof FormData);`);
+        for (const param of requestBody.params) {
+            if (isMultipartBinaryParam(param)) {
+                assertions.push(`  assert.ok((call.init.body as FormData).get(${JSON.stringify(param.sourceName)}) instanceof Blob);`);
+            } else {
+                assertions.push(`  assert.equal((call.init.body as FormData).get(${JSON.stringify(param.sourceName)}), ${JSON.stringify(scalarToExpectedString(args[param.argName]))});`);
+            }
+        }
+    } else if (requestBody?.contentKind === "text") {
+        assertions.push(`  assert.equal(headers["Content-Type"], ${JSON.stringify(requestBody.contentType)});`);
+        assertions.push(`  assert.equal(call.init.body, ${JSON.stringify(scalarToExpectedString(args[requestBody.params[0]?.argName || "body"]))});`);
+    } else if (requestBody?.contentKind === "binary") {
+        assertions.push(`  assert.equal(headers["Content-Type"], ${JSON.stringify(requestBody.contentType)});`);
+        assertions.push(`  assert.equal(call.init.body, args[${JSON.stringify(requestBody.params[0]?.argName || "body")}]);`);
+    }
+
+    return `test(${JSON.stringify(`${tool.displayName} operation builds an API request`)}, async () => {
+  const args = ${JSON.stringify(args, null, 2)};
+  await operations[${index}](args);
+  const call = lastFetchCall();
+  const url = new URL(call.url);
+  const headers = call.init.headers as Record<string, string>;
+${assertions.join("\n")}
+});`;
+}
+
 function renderNodeTest(plan: GenerationPlan): string {
     return `import test from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 
-test("manifest matches generated project", () => {
-  const manifestPath = resolve(import.meta.dirname, "../makemcp.manifest.json");
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  assert.equal(manifest.serverName, ${JSON.stringify(plan.server.name)});
-  assert.equal(manifest.toolCount, ${plan.tools.length});
+${renderNodeAuthEnvAssignments(plan)}
+
+type FetchCall = { url: string; init: RequestInit };
+
+const fetchCalls: FetchCall[] = [];
+let nextResponse = { ok: true, status: 200, body: JSON.stringify({ ok: true }) };
+const originalFetch = globalThis.fetch;
+
+globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+  fetchCalls.push({ url: String(url), init: init || {} });
+  const response = nextResponse;
+  nextResponse = { ok: true, status: 200, body: JSON.stringify({ ok: true }) };
+  return {
+    ok: response.ok,
+    status: response.status,
+    text: async () => response.body,
+  } as Response;
+}) as typeof fetch;
+
+const { applyAuth, executeApiRequest } = await import("../src/api/client.js");
+const { appendSerializedParameter, serializePathParameter } = await import("../src/api/serialization.js");
+const { operations } = await import("../src/api/operations.js");
+
+test.after(() => {
+  globalThis.fetch = originalFetch;
 });
+
+test.beforeEach(() => {
+  fetchCalls.length = 0;
+  nextResponse = { ok: true, status: 200, body: JSON.stringify({ ok: true }) };
+});
+
+function lastFetchCall(): FetchCall {
+  const call = fetchCalls.at(-1);
+  if (!call) throw new Error("Expected fetch to be called");
+  return call;
+}
+
+test("executeApiRequest constructs URLs and reports HTTP errors", async () => {
+  await executeApiRequest({
+    path: "/reports/alpha",
+    method: "GET",
+    query: new URLSearchParams([["q", "a b"]]),
+    headers: { Accept: "application/json" },
+  });
+
+  let call = lastFetchCall();
+  assert.equal(call.url, "https://unit.example.test/reports/alpha?q=a+b");
+  assert.equal(call.init.method, "GET");
+  assert.deepEqual(call.init.headers, { Accept: "application/json" });
+
+  nextResponse = { ok: false, status: 418, body: "teapot" };
+  await assert.rejects(
+    executeApiRequest({ path: "/failure", method: "POST" }),
+    /HTTP 418: teapot/
+  );
+});
+
+test("serialization helpers encode paths and queries", () => {
+  assert.equal(
+    serializePathParameter("ids", ["a", "b"], { location: "path", style: "matrix", explode: true }),
+    ";ids=a;ids=b"
+  );
+
+  const params = new URLSearchParams();
+  appendSerializedParameter(params, "filter", { status: "open" }, { location: "query", style: "deepObject", explode: true });
+  appendSerializedParameter(params, "tags", ["a", "b"], { location: "query", style: "form", explode: true });
+  assert.equal(params.toString(), "filter%5Bstatus%5D=open&tags=a&tags=b");
+});
+
+test("applyAuth injects headers, query parameters, and cookies", () => {
+  const query = new URLSearchParams();
+  const headers: Record<string, string> = {};
+  const cookies: string[] = [];
+
+  applyAuth(query, headers, cookies, [{
+    schemes: [
+      { type: "apiKey", in: "header", name: "X-API-Key", value: "key" },
+      { type: "apiKey", in: "query", name: "api_key", value: "query-key" },
+      { type: "apiKey", in: "cookie", name: "session", value: "cookie-value" },
+    ],
+  }]);
+
+  assert.equal(headers["X-API-Key"], "key");
+  assert.equal(query.get("api_key"), "query-key");
+  assert.deepEqual(cookies, ["session=cookie-value"]);
+});
+
+${plan.tools.map(renderNodeOperationBehaviorTest).join("\n\n")}
 `;
 }
 
@@ -720,7 +1045,7 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     }
 
     if (plan.features.tests) {
-        files.set("tests/manifest.test.ts", renderNodeTest(plan));
+        files.set("tests/behavior.test.ts", renderNodeTest(plan));
     }
 
     return { manifest, files };

@@ -275,7 +275,7 @@ test("openapi -> node preview matches golden contract", () => {
     assert.equal(preview.manifest.features.docker, true);
     assert.equal(preview.verification?.status, "passed");
     assert.ok(preview.files.some((file) => file.name === "Dockerfile"));
-    assert.ok(preview.files.some((file) => file.name === "tests/manifest.test.ts"));
+    assert.ok(preview.files.some((file) => file.name === "tests/behavior.test.ts"));
     assert.ok(preview.files.some((file) => file.name === "src/config.ts"));
     assert.ok(preview.files.some((file) => file.name === "src/mcp/server.ts"));
     assert.ok(preview.files.some((file) => file.name === "src/api/client.ts"));
@@ -316,7 +316,7 @@ test("openapi -> python preview matches golden contract", () => {
 
     assert.equal(preview.manifest.language, "python");
     assert.equal(preview.verification?.status, "passed");
-    assert.ok(preview.files.some((file) => file.name === "tests/test_manifest.py"));
+    assert.ok(preview.files.some((file) => file.name === "tests/test_behavior.py"));
     assert.ok(preview.files.some((file) => file.name === "src/config.py"));
     assert.ok(preview.files.some((file) => file.name === "src/api_client.py"));
     assert.ok(preview.files.some((file) => file.name === "src/operations.py"));
