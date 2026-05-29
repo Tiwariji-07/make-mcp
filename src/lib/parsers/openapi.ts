@@ -1,55 +1,17 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
 import { ParsedSpec } from "@/store/project-store";
 import { buildOpenAPIModel } from "@/lib/api-model";
+import type { OpenAPISpec } from "@/lib/api-model/openapi";
 import { apiModelToParsedSpec } from "@/lib/api-model/legacy";
-
-interface OpenAPISpec extends Record<string, unknown> {
-    openapi?: string;
-    swagger?: string;
-    info: {
-        title: string;
-        version: string;
-        description?: string;
-    };
-    servers?: Array<{ url: string; description?: string; variables?: Record<string, unknown> }>;
-    host?: string;
-    basePath?: string;
-    schemes?: string[];
-    paths: Record<string, Record<string, OpenAPIOperation>>;
-    components?: {
-        securitySchemes?: Record<string, Record<string, unknown>>;
-    };
-    securityDefinitions?: Record<string, Record<string, unknown>>;
-    security?: Record<string, string[]>[];
-}
-
-interface OpenAPIOperation {
-    operationId?: string;
-    summary?: string;
-    description?: string;
-    tags?: string[];
-    parameters?: OpenAPIParameter[];
-    requestBody?: {
-        required?: boolean;
-        content?: Record<string, { schema?: Record<string, unknown> }>;
-    };
-}
-
-interface OpenAPIParameter {
-    name: string;
-    in: "query" | "path" | "header" | "cookie" | "body"; // Swagger 2.0 includes "body"
-    required?: boolean;
-    schema?: Record<string, unknown>; // Full schema for body params
-    type?: string;
-    description?: string;
-}
 
 // Parse OpenAPI/Swagger spec
 export async function parseOpenAPISpec(input: string | object): Promise<ParsedSpec> {
     try {
         // Parse and dereference the spec - this resolves all $refs!
         const api = (await SwaggerParser.dereference(input as string)) as OpenAPISpec;
-        return apiModelToParsedSpec(buildOpenAPIModel(api));
+        return apiModelToParsedSpec(buildOpenAPIModel(api, {
+            importedFrom: typeof input === "string" ? input : undefined,
+        }));
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to parse OpenAPI spec";
         throw new Error(`OpenAPI parsing error: ${message}`);

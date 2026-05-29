@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildOpenAPIModel } from "../api-model/openapi.ts";
+import { apiModelToParsedSpec } from "../api-model/legacy.ts";
 import { parseGeneratorRequestPayload } from "./request.ts";
 import { createPreviewResponse } from "./index.ts";
+import { schemaToZodType } from "./schema.ts";
 
 test("openapi model applies operation parameter overrides and preserves path servers", () => {
     const model = buildOpenAPIModel({
@@ -150,4 +152,221 @@ test("generator request preserves apiModel and plans from canonical operation me
     assert.match(envFile, /API_BASE_URL=https:\/\/canonical\.example\.com/);
     assert.match(indexFile, /url = url\.replace\("\{id\}"/);
     assert.match(indexFile, /requestHeaders\["Content-Type"\] = "application\/json"/);
+});
+
+test("openapi model preserves rich OpenAPI 3 operation metadata", () => {
+    const model = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Catalog", version: "1.0.0" },
+        servers: [{
+            url: "https://{tenant}.api.example.com/{version}",
+            variables: {
+                tenant: { default: "demo", enum: ["demo", "acme"] },
+                version: { default: "v2", description: "API version" },
+            },
+        }],
+        components: {
+            securitySchemes: {
+                bearerAuth: { type: "http", scheme: "bearer" },
+                apiKey: { type: "apiKey", in: "query", name: "key" },
+            },
+        },
+        security: [{ bearerAuth: [] }],
+        paths: {
+            "/items/{id}": {
+                parameters: [
+                    {
+                        name: "id",
+                        in: "path",
+                        required: true,
+                        schema: { type: "string", default: "item_1" },
+                        style: "simple",
+                        explode: false,
+                    },
+                    {
+                        name: "filter",
+                        in: "query",
+                        schema: { type: "object", properties: { color: { type: "string" } } },
+                        style: "deepObject",
+                        explode: true,
+                    },
+                ],
+                post: {
+                    security: [{ apiKey: [] }],
+                    parameters: [
+                        {
+                            name: "filter",
+                            in: "query",
+                            schema: {
+                                oneOf: [
+                                    { type: "string", default: "all" },
+                                    { type: "array", items: { type: "string" } },
+                                ],
+                            },
+                            style: "form",
+                            explode: false,
+                            allowReserved: true,
+                            examples: { colors: { value: ["red", "blue"] } },
+                        },
+                    ],
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    allOf: [
+                                        {
+                                            type: "object",
+                                            properties: {
+                                                name: { type: "string", example: "Widget" },
+                                            },
+                                            required: ["name"],
+                                        },
+                                        {
+                                            type: "object",
+                                            properties: {
+                                                metadata: {
+                                                    type: "object",
+                                                    properties: {
+                                                        tags: {
+                                                            type: "array",
+                                                            items: { anyOf: [{ type: "string" }, { type: "integer" }] },
+                                                        },
+                                                    },
+                                                },
+                                            },
+                                        },
+                                    ],
+                                },
+                                example: { name: "Widget" },
+                            },
+                            "application/merge-patch+json": {
+                                schema: { type: "object", additionalProperties: true },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+
+    assert.deepEqual(model.baseUrls, ["https://demo.api.example.com/v2"]);
+    assert.equal(model.servers[0].url, "https://{tenant}.api.example.com/{version}");
+    assert.equal(model.servers[0].variables?.tenant.default, "demo");
+
+    const operation = model.operations[0];
+    assert.deepEqual(operation.security, [{ apiKey: [] }]);
+    assert.equal(operation.parameters.length, 2);
+    assert.equal(operation.parameters[1].source?.level, "operation");
+    assert.equal(operation.parameters[1].style, "form");
+    assert.equal(operation.parameters[1].explode, false);
+    assert.equal(operation.parameters[1].allowReserved, true);
+    assert.deepEqual(operation.parameters[1].examples?.colors.value, ["red", "blue"]);
+    assert.equal(operation.requestBody?.content.length, 2);
+    assert.equal(operation.requestBody?.content[0].mediaType, "application/json");
+    assert.equal(operation.requestBody?.content[1].mediaType, "application/merge-patch+json");
+
+    const parsed = apiModelToParsedSpec(model);
+    assert.equal(parsed.baseUrl, "https://demo.api.example.com/v2");
+    assert.equal(parsed.endpoints[0].parameters[1].type, "string | string[]");
+});
+
+test("openapi model converts Swagger 2 security definitions, consumes, produces, and form data", () => {
+    const model = buildOpenAPIModel({
+        swagger: "2.0",
+        info: { title: "Uploads", version: "1.0.0" },
+        host: "uploads.example.com",
+        basePath: "/api",
+        schemes: ["https"],
+        consumes: ["multipart/form-data"],
+        produces: ["application/json", "text/csv"],
+        securityDefinitions: {
+            basicAuth: { type: "basic" },
+            apiKey: { type: "apiKey", in: "header", name: "X-API-Key" },
+        },
+        security: [{ basicAuth: [] }],
+        paths: {
+            "/files": {
+                post: {
+                    security: [],
+                    parameters: [
+                        { name: "file", in: "formData", required: true, type: "file", description: "Upload" },
+                        { name: "tags", in: "formData", type: "array", items: { type: "string" }, collectionFormat: "multi" },
+                    ],
+                    responses: {
+                        "200": {
+                            description: "OK",
+                            schema: {
+                                type: "array",
+                                items: {
+                                    type: "object",
+                                    properties: { id: { type: "string", default: "file_1" } },
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        },
+    });
+
+    assert.equal(model.baseUrls[0], "https://uploads.example.com/api");
+    assert.deepEqual(model.security, [{ basicAuth: [] }]);
+    assert.deepEqual(model.operations[0].security, []);
+    assert.equal(model.securitySchemes.basicAuth.type, "http");
+    assert.equal(model.securitySchemes.basicAuth.scheme, "basic");
+    assert.equal(model.operations[0].requestBody?.content[0].mediaType, "multipart/form-data");
+    assert.deepEqual(model.operations[0].requestBody?.content[0].schema?.required, ["file"]);
+    assert.equal(
+        (model.operations[0].requestBody?.content[0].schema?.properties as Record<string, Record<string, unknown>>).tags.collectionFormat,
+        "multi"
+    );
+    assert.deepEqual(
+        model.operations[0].responses[0].content?.map((content) => content.mediaType),
+        ["application/json", "text/csv"]
+    );
+});
+
+test("schema generation supports OpenAPI composition keywords", () => {
+    assert.equal(
+        schemaToZodType({
+            oneOf: [{ type: "string" }, { type: "integer" }],
+        }),
+        "z.union([z.string(), z.number().int()])"
+    );
+    assert.equal(
+        schemaToZodType({
+            anyOf: [{ type: "string" }, { type: "boolean" }],
+        }),
+        "z.union([z.string(), z.boolean()])"
+    );
+    assert.equal(
+        schemaToZodType({
+            allOf: [
+                { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+                { type: "object", properties: { active: { type: "boolean" } } },
+            ],
+        }),
+        "z.object({\n    \"id\": z.string()\n  }).and(z.object({\n    \"active\": z.boolean().optional()\n  }))"
+    );
+});
+
+test("schema generation emits valid Zod for string, numeric, mixed, and single-value enums", () => {
+    assert.equal(
+        schemaToZodType({ type: "string", enum: ["draft", "published"] }),
+        "z.enum([\"draft\", \"published\"])"
+    );
+    assert.equal(
+        schemaToZodType({ type: "integer", enum: [1, 2] }),
+        "z.union([z.literal(1), z.literal(2)])"
+    );
+    assert.equal(
+        schemaToZodType({ enum: ["auto", 0, true] }),
+        "z.union([z.literal(\"auto\"), z.literal(0), z.literal(true)])"
+    );
+    assert.equal(
+        schemaToZodType({ type: "string", enum: ["only"] }),
+        "z.literal(\"only\")"
+    );
 });

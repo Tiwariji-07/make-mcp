@@ -19,12 +19,36 @@ export function schemaToZodType(schema: Record<string, unknown>): string {
     if (!schema) return "z.unknown()";
 
     const type = schema.type as string;
+    const allOf = schema.allOf as Record<string, unknown>[] | undefined;
+    const oneOf = schema.oneOf as Record<string, unknown>[] | undefined;
+    const anyOf = schema.anyOf as Record<string, unknown>[] | undefined;
+
+    if (Array.isArray(allOf) && allOf.length > 0) {
+        return allOf.map(schemaToZodType).reduce((acc, value) => `${acc}.and(${value})`);
+    }
+
+    if (Array.isArray(oneOf) && oneOf.length > 0) {
+        if (oneOf.length === 1) return schemaToZodType(oneOf[0]);
+        return `z.union([${oneOf.map(schemaToZodType).join(", ")}])`;
+    }
+
+    if (Array.isArray(anyOf) && anyOf.length > 0) {
+        if (anyOf.length === 1) return schemaToZodType(anyOf[0]);
+        return `z.union([${anyOf.map(schemaToZodType).join(", ")}])`;
+    }
 
     if (schema.enum && Array.isArray(schema.enum) && schema.enum.length > 0) {
-        const values = schema.enum.map((value) =>
-            typeof value === "string" ? JSON.stringify(value) : String(value)
-        );
-        return `z.enum([${values.join(", ")}])`;
+        const values = schema.enum;
+
+        if (values.length === 1) {
+            return `z.literal(${JSON.stringify(values[0])})`;
+        }
+
+        if (values.every((value) => typeof value === "string")) {
+            return `z.enum([${values.map((value) => JSON.stringify(value)).join(", ")}])`;
+        }
+
+        return `z.union([${values.map((value) => `z.literal(${JSON.stringify(value)})`).join(", ")}])`;
     }
 
     switch (type) {

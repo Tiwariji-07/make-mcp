@@ -43,6 +43,7 @@ export interface ApiServer {
     url: string;
     description?: string;
     variables?: Record<string, ApiServerVariable>;
+    resolvedUrl?: string;
 }
 
 export interface ApiExample {
@@ -70,6 +71,8 @@ export interface ApiParameter {
     allowEmptyValue?: boolean;
     style?: string;
     explode?: boolean;
+    allowReserved?: boolean;
+    content?: ApiMediaType[];
     example?: unknown;
     examples?: Record<string, ApiExample>;
     source?: {

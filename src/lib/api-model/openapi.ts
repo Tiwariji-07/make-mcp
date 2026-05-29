@@ -10,7 +10,7 @@ import type {
     ApiSourceMetadata,
 } from "./types";
 
-type OpenAPISpec = Record<string, unknown> & {
+export type OpenAPISpec = Record<string, unknown> & {
     openapi?: string;
     swagger?: string;
     info?: Record<string, unknown>;
@@ -18,6 +18,8 @@ type OpenAPISpec = Record<string, unknown> & {
     host?: string;
     basePath?: string;
     schemes?: string[];
+    consumes?: string[];
+    produces?: string[];
     paths?: Record<string, Record<string, unknown>>;
     components?: { securitySchemes?: Record<string, Record<string, unknown>> };
     securityDefinitions?: Record<string, Record<string, unknown>>;
@@ -40,6 +42,27 @@ function asBoolean(value: unknown): boolean | undefined {
     return typeof value === "boolean" ? value : undefined;
 }
 
+function asStringArray(value: unknown): string[] | undefined {
+    return Array.isArray(value)
+        ? value.filter((item): item is string => typeof item === "string")
+        : undefined;
+}
+
+function removeUndefined<T extends Record<string, unknown>>(value: T): T {
+    return Object.fromEntries(
+        Object.entries(value).filter(([, entry]) => entry !== undefined)
+    ) as T;
+}
+
+function resolveServerUrl(server: ApiServer): string {
+    if (!server.variables) return server.url;
+
+    return Object.entries(server.variables).reduce((url, [name, variable]) =>
+        url.replace(new RegExp(`\\{${name}\\}`, "g"), variable.default),
+        server.url
+    );
+}
+
 function normalizeServers(api: OpenAPISpec): ApiServer[] {
     if (Array.isArray(api.servers) && api.servers.length > 0) {
         return api.servers.flatMap((server) => {
@@ -48,7 +71,7 @@ function normalizeServers(api: OpenAPISpec): ApiServer[] {
             if (!record || !url) return [];
 
             const variables = asRecord(record.variables);
-            return [{
+            const normalizedServer: ApiServer = {
                 url,
                 description: asString(record.description),
                 variables: variables
@@ -66,14 +89,21 @@ function normalizeServers(api: OpenAPISpec): ApiServer[] {
                         }]];
                     }))
                     : undefined,
+            };
+
+            return [{
+                ...normalizedServer,
+                resolvedUrl: resolveServerUrl(normalizedServer),
             }];
         });
     }
 
     if (api.host) {
         const scheme = api.schemes?.[0] || "https";
+        const url = `${scheme}://${api.host}${api.basePath || ""}`;
         return [{
-            url: `${scheme}://${api.host}${api.basePath || ""}`,
+            url,
+            resolvedUrl: url,
         }];
     }
 
@@ -96,6 +126,32 @@ function normalizeMediaTypes(content: unknown): ApiMediaType[] {
     });
 }
 
+function schemaFromSwaggerParameter(parameter: Record<string, unknown>): Record<string, unknown> | undefined {
+    const type = parameter.type === "file" ? "string" : asString(parameter.type);
+    if (!type) return undefined;
+
+    return removeUndefined({
+        type,
+        format: parameter.type === "file" ? "binary" : parameter.format,
+        items: asRecord(parameter.items),
+        collectionFormat: parameter.collectionFormat,
+        default: parameter.default,
+        enum: parameter.enum,
+        example: parameter.example,
+        minimum: parameter.minimum,
+        maximum: parameter.maximum,
+        exclusiveMinimum: parameter.exclusiveMinimum,
+        exclusiveMaximum: parameter.exclusiveMaximum,
+        minLength: parameter.minLength,
+        maxLength: parameter.maxLength,
+        pattern: parameter.pattern,
+        minItems: parameter.minItems,
+        maxItems: parameter.maxItems,
+        uniqueItems: parameter.uniqueItems,
+        multipleOf: parameter.multipleOf,
+    });
+}
+
 function normalizeParameter(value: unknown, level: "path" | "operation"): ApiParameter | undefined {
     const parameter = asRecord(value);
     const name = asString(parameter?.name);
@@ -105,14 +161,9 @@ function normalizeParameter(value: unknown, level: "path" | "operation"): ApiPar
         return undefined;
     }
 
-    const schema = asRecord(parameter.schema)
-        || (parameter.type ? {
-            type: parameter.type,
-            format: parameter.format,
-            default: parameter.default,
-            enum: parameter.enum,
-            example: parameter.example,
-        } : undefined);
+    const schema = asRecord(parameter.schema) || schemaFromSwaggerParameter(parameter);
+
+    const content = normalizeMediaTypes(parameter.content);
 
     return {
         name,
@@ -124,6 +175,8 @@ function normalizeParameter(value: unknown, level: "path" | "operation"): ApiPar
         allowEmptyValue: asBoolean(parameter.allowEmptyValue),
         style: asString(parameter.style),
         explode: asBoolean(parameter.explode),
+        allowReserved: asBoolean(parameter.allowReserved),
+        content: content.length > 0 ? content : undefined,
         example: parameter.example,
         examples: asRecord(parameter.examples) as ApiParameter["examples"],
         source: { level, raw: parameter },
@@ -154,7 +207,64 @@ function mergeParameters(pathParameters: ApiParameter[], operationParameters: Ap
     return merged;
 }
 
-function normalizeRequestBody(operation: Record<string, unknown>): ApiOperation["requestBody"] {
+function contentTypesFor(operation: Record<string, unknown>, api: OpenAPISpec, fallback: string[]): string[] {
+    return asStringArray(operation.consumes) || asStringArray(api.consumes) || fallback;
+}
+
+function normalizeSwaggerBodyParameter(
+    operation: Record<string, unknown>,
+    api: OpenAPISpec
+): ApiOperation["requestBody"] {
+    const parameters = Array.isArray(operation.parameters)
+        ? operation.parameters.map((parameter) => asRecord(parameter)).filter(Boolean) as Record<string, unknown>[]
+        : [];
+    const bodyParameter = parameters.find((parameter) => parameter.in === "body");
+
+    if (bodyParameter) {
+        return {
+            description: asString(bodyParameter.description),
+            required: Boolean(bodyParameter.required),
+            content: contentTypesFor(operation, api, ["application/json"]).map((mediaType) => ({
+                mediaType,
+                schema: asRecord(bodyParameter.schema),
+                example: bodyParameter.example,
+                examples: asRecord(bodyParameter.examples) as ApiMediaType["examples"],
+            })),
+        };
+    }
+
+    const formParameters = parameters.filter((parameter) => parameter.in === "formData");
+    if (formParameters.length === 0) return undefined;
+
+    const required = formParameters
+        .filter((parameter) => Boolean(parameter.required))
+        .map((parameter) => asString(parameter.name))
+        .filter((name): name is string => Boolean(name));
+    const properties = Object.fromEntries(formParameters.flatMap((parameter) => {
+        const name = asString(parameter.name);
+        if (!name) return [];
+
+        return [[name, removeUndefined({
+            ...(schemaFromSwaggerParameter(parameter) || { type: "string" }),
+            description: parameter.description,
+        })]];
+    }));
+    const schema = removeUndefined({
+        type: "object",
+        properties,
+        required: required.length > 0 ? required : undefined,
+    });
+
+    return {
+        required: required.length > 0,
+        content: contentTypesFor(operation, api, ["application/x-www-form-urlencoded"]).map((mediaType) => ({
+            mediaType,
+            schema,
+        })),
+    };
+}
+
+function normalizeRequestBody(operation: Record<string, unknown>, api: OpenAPISpec): ApiOperation["requestBody"] {
     const requestBody = asRecord(operation.requestBody);
     if (requestBody) {
         return {
@@ -164,37 +274,28 @@ function normalizeRequestBody(operation: Record<string, unknown>): ApiOperation[
         };
     }
 
-    const bodyParameter = Array.isArray(operation.parameters)
-        ? operation.parameters
-            .map((parameter) => asRecord(parameter))
-            .find((parameter) => parameter?.in === "body")
-        : undefined;
-
-    if (!bodyParameter) return undefined;
-
-    return {
-        description: asString(bodyParameter.description),
-        required: Boolean(bodyParameter.required),
-        content: [{
-            mediaType: "application/json",
-            schema: asRecord(bodyParameter.schema),
-            example: bodyParameter.example,
-            examples: asRecord(bodyParameter.examples) as ApiMediaType["examples"],
-        }],
-    };
+    return normalizeSwaggerBodyParameter(operation, api);
 }
 
-function normalizeResponses(responses: unknown): ApiResponse[] {
+function normalizeResponses(responses: unknown, operation: Record<string, unknown>, api: OpenAPISpec): ApiResponse[] {
     const responseRecords = asRecord(responses);
     if (!responseRecords) return [];
 
     return Object.entries(responseRecords).map(([statusCode, response]) => {
         const responseRecord = asRecord(response) || {};
+        const responseContent = normalizeMediaTypes(responseRecord.content);
+        const swaggerSchema = asRecord(responseRecord.schema);
+
         return {
             statusCode,
             description: asString(responseRecord.description),
             headers: normalizeHeaders(responseRecord.headers),
-            content: normalizeMediaTypes(responseRecord.content),
+            content: responseContent.length > 0
+                ? responseContent
+                : swaggerSchema
+                    ? (asStringArray(operation.produces) || asStringArray(api.produces) || ["application/json"])
+                        .map((mediaType) => ({ mediaType, schema: swaggerSchema }))
+                    : [],
             links: asRecord(responseRecord.links),
         };
     });
@@ -225,9 +326,36 @@ function operationIdFor(method: string, path: string, operation: Record<string, 
     return asString(operation.operationId) || `${method.toUpperCase()}-${path}`;
 }
 
+function normalizeSecurityRequirements(value: unknown): ApiSecurityRequirement[] {
+    if (!Array.isArray(value)) return [];
+
+    return value.flatMap((requirement) => {
+        const record = asRecord(requirement);
+        if (!record) return [];
+
+        return [Object.fromEntries(Object.entries(record).map(([name, scopes]) => [
+            name,
+            asStringArray(scopes) || [],
+        ]))];
+    });
+}
+
+function normalizeSecuritySchemes(api: OpenAPISpec): Record<string, Record<string, unknown>> {
+    if (api.components?.securitySchemes) return api.components.securitySchemes;
+    if (!api.securityDefinitions) return {};
+
+    return Object.fromEntries(Object.entries(api.securityDefinitions).map(([name, scheme]) => {
+        if (scheme.type === "basic") {
+            return [name, { ...scheme, type: "http", scheme: "basic", sourceType: "basic" }];
+        }
+
+        return [name, scheme];
+    }));
+}
+
 export function buildOpenAPIModel(api: OpenAPISpec, source: Partial<ApiSourceMetadata> = {}): ApiModel {
     const servers = normalizeServers(api);
-    const globalSecurity = Array.isArray(api.security) ? api.security : [];
+    const globalSecurity = normalizeSecurityRequirements(api.security);
     const operations: ApiOperation[] = [];
 
     for (const [path, pathItemValue] of Object.entries(api.paths || {})) {
@@ -261,9 +389,11 @@ export function buildOpenAPIModel(api: OpenAPISpec, source: Partial<ApiSourceMet
                     : undefined,
                 deprecated: asBoolean(operation.deprecated),
                 parameters: mergeParameters(pathParameters, operationParameters),
-                requestBody: normalizeRequestBody(operation),
-                responses: normalizeResponses(operation.responses),
-                security: Array.isArray(operation.security) ? operation.security as ApiSecurityRequirement[] : undefined,
+                requestBody: normalizeRequestBody(operation, api),
+                responses: normalizeResponses(operation.responses, operation, api),
+                security: operation.security === undefined
+                    ? undefined
+                    : normalizeSecurityRequirements(operation.security),
                 servers: normalizeServers(operation as OpenAPISpec),
                 pathServers,
                 source: { raw: operation },
@@ -289,8 +419,8 @@ export function buildOpenAPIModel(api: OpenAPISpec, source: Partial<ApiSourceMet
             license: asRecord(info.license),
         },
         servers,
-        baseUrls: servers.map((server) => server.url),
-        securitySchemes: api.components?.securitySchemes || api.securityDefinitions || {},
+        baseUrls: servers.map((server) => server.resolvedUrl || server.url),
+        securitySchemes: normalizeSecuritySchemes(api),
         security: globalSecurity,
         operations: operations.map((operation) => ({
             ...operation,

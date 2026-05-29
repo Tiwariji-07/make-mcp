@@ -4,6 +4,19 @@ import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter, ApiSchema } fr
 export function getTypeFromApiSchema(schema?: ApiSchema): string {
     if (!schema) return "string";
 
+    const allOf = schema.allOf as ApiSchema[] | undefined;
+    if (Array.isArray(allOf) && allOf.length > 0) {
+        return getTypeFromApiSchema(allOf.find((item) => item.type || item.properties) || allOf[0]);
+    }
+
+    const oneOf = schema.oneOf as ApiSchema[] | undefined;
+    const anyOf = schema.anyOf as ApiSchema[] | undefined;
+    const alternatives = oneOf || anyOf;
+    if (Array.isArray(alternatives) && alternatives.length > 0) {
+        const types = [...new Set(alternatives.map((item) => getTypeFromApiSchema(item)))];
+        return types.length === 1 ? types[0] : types.join(" | ");
+    }
+
     if (schema.type === "array") {
         const items = schema.items as ApiSchema | undefined;
         return items ? `${getTypeFromApiSchema(items)}[]` : "any[]";
