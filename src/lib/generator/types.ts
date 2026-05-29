@@ -50,6 +50,7 @@ export interface GeneratorToolParameter {
     description: string;
     location?: ParamLocation;
     schema?: Record<string, unknown>;
+    hidden?: boolean;
 }
 
 export interface GeneratorServerConfig {

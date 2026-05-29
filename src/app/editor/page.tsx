@@ -122,6 +122,7 @@ export default function EditorPage() {
               const tool = tools.find((t) => t.endpointId === ep.id);
               if (!tool) return null;
               const isExpanded = expandedId === ep.id;
+              const visibleParamCount = tool.parameters.filter((param) => !param.hidden).length;
 
               return (
                 <div key={ep.id} className="border-b border-border">
@@ -165,7 +166,7 @@ export default function EditorPage() {
 
                     {/* Params */}
                     <span className="text-[11px] text-muted-foreground">
-                      {tool.parameters.length} param{tool.parameters.length !== 1 ? "s" : ""}
+                      {visibleParamCount} param{visibleParamCount !== 1 ? "s" : ""}
                     </span>
 
                     {/* Expand arrow */}
@@ -241,6 +242,7 @@ export default function EditorPage() {
                                       newParams[idx] = { ...param, name: e.target.value };
                                       updateToolConfig(ep.id, { parameters: newParams });
                                     }}
+                                    disabled={param.hidden}
                                     className="h-7 w-32 bg-background border-border text-[11px] focus:border-primary"
                                   />
                                   <span className="text-[10px] text-muted-foreground">{param.type}</span>
@@ -254,9 +256,22 @@ export default function EditorPage() {
                                       newParams[idx] = { ...param, description: e.target.value };
                                       updateToolConfig(ep.id, { parameters: newParams });
                                     }}
+                                    disabled={param.hidden}
                                     className="h-7 flex-1 bg-background border-border text-[11px] focus:border-primary"
                                     placeholder="Description..."
                                   />
+                                  <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
+                                    <Checkbox
+                                      checked={!param.hidden}
+                                      disabled={param.location === "path" && param.required}
+                                      onCheckedChange={(checked) => {
+                                        const newParams = [...tool.parameters];
+                                        newParams[idx] = { ...param, hidden: !checked };
+                                        updateToolConfig(ep.id, { parameters: newParams });
+                                      }}
+                                    />
+                                    Use
+                                  </label>
                                 </div>
                               ))}
                             </div>

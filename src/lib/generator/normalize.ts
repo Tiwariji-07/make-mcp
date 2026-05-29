@@ -86,16 +86,61 @@ function getTypeFromSchema(schema?: Record<string, unknown>): string {
 
 function findConfiguredParameter(
     planParameter: ToolPlanParameter,
-    configuredParameters: GeneratorToolParameter[]
+    configuredParameters: GeneratorToolParameter[],
+    warnings?: string[],
+    toolName?: string
 ): GeneratorToolParameter | undefined {
-    return configuredParameters.find((parameter) =>
-        parameter.location === planParameter.location &&
-        (
-            parameter.originalName === planParameter.sourceName ||
-            parameter.name === planParameter.sourceName ||
-            parameter.name === planParameter.argName
-        )
+    const matchesIdentity = (parameter: GeneratorToolParameter) =>
+        parameter.originalName === planParameter.sourceName ||
+        parameter.name === planParameter.sourceName ||
+        parameter.name === planParameter.argName;
+    const locationMatch = configuredParameters.find((parameter) =>
+        parameter.location === planParameter.location && matchesIdentity(parameter)
     );
+
+    if (locationMatch) {
+        return locationMatch;
+    }
+
+    const explicitWrongLocationMatches = configuredParameters.filter((parameter) =>
+        parameter.location !== undefined &&
+        parameter.location !== planParameter.location &&
+        matchesIdentity(parameter)
+    );
+    if (explicitWrongLocationMatches.length > 0) {
+        warnings?.push(`Ignored UI parameter override with mismatched location for "${planParameter.sourceName}" in ${toolName || "tool"}`);
+    }
+
+    const fallbackMatches = configuredParameters.filter((parameter) =>
+        parameter.location === undefined && matchesIdentity(parameter)
+    );
+    if (fallbackMatches.length === 1) {
+        return fallbackMatches[0];
+    }
+
+    if (fallbackMatches.length > 1) {
+        warnings?.push(`Ignored ambiguous UI parameter override for "${planParameter.sourceName}" in ${toolName || "tool"}`);
+    }
+
+    return undefined;
+}
+
+function isParameterHidden(
+    planParameter: ToolPlanParameter,
+    configuredParameters: GeneratorToolParameter[],
+    warnings: string[],
+    toolName: string
+): boolean {
+    if (!findConfiguredParameter(planParameter, configuredParameters)?.hidden) {
+        return false;
+    }
+
+    if (planParameter.location === "path" && planParameter.required) {
+        warnings.push(`Ignored hidden override for required path parameter "${planParameter.sourceName}" in ${toolName}`);
+        return false;
+    }
+
+    return true;
 }
 
 function toGenerationToolFromToolPlan(
@@ -104,8 +149,11 @@ function toGenerationToolFromToolPlan(
     warnings: string[]
 ): GenerationTool {
     const seenArgs = new Set<string>();
-    const params: GenerationParam[] = toolPlan.parameters.map((parameter, parameterIndex) => {
-        const configuredParameter = findConfiguredParameter(parameter, tool.parameters);
+    const visibleParameters = toolPlan.parameters.filter((parameter) =>
+        !isParameterHidden(parameter, tool.parameters, warnings, toolPlan.toolName)
+    );
+    const params: GenerationParam[] = visibleParameters.map((parameter, parameterIndex) => {
+        const configuredParameter = findConfiguredParameter(parameter, tool.parameters, warnings, toolPlan.toolName);
         const desired = configuredParameter?.name || parameter.argName;
         const argName = makeUniqueIdentifier(desired, seenArgs, `param_${parameterIndex + 1}`);
 
@@ -116,7 +164,7 @@ function toGenerationToolFromToolPlan(
         return {
             argName,
             sourceName: parameter.sourceName,
-            type: configuredParameter?.type || getTypeFromSchema(parameter.schema),
+            type: getTypeFromSchema(parameter.schema),
             required: parameter.required,
             description: configuredParameter?.description || parameter.description,
             location: parameter.location,
@@ -186,7 +234,7 @@ function normalizeTool(
         warnings.push(`Trimmed empty or padded tool name for ${tool.endpointId}`);
     }
 
-    const params: GenerationParam[] = tool.parameters.map((parameter, parameterIndex) => {
+    const params: GenerationParam[] = tool.parameters.filter((parameter) => !parameter.hidden).map((parameter, parameterIndex) => {
         const canonicalParameter = getCanonicalParameter(canonicalOperation, parameter);
         const desired = parameter.name || parameter.originalName || `param_${parameterIndex + 1}`;
         const argName = makeUniqueIdentifier(desired, seenArgs, `param_${parameterIndex + 1}`);

@@ -163,11 +163,321 @@ test("generation plan consumes ToolPlan for canonical ApiModel operations", () =
         },
     };
 
-    const [tool] = buildGenerationPlan(request).tools;
+    const plan = buildGenerationPlan(request);
+    const [tool] = plan.tools;
 
     assert.deepEqual(tool.params.map((param) => [param.argName, param.sourceName, param.location]), [
         ["itemId", "itemId", "path"],
         ["name", "name", "body"],
     ]);
     assert.equal(tool.requestBody?.contentKind, "json-object");
+});
+
+test("generation merges UI choices onto canonical operations without replacing API metadata", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Catalog", version: "1.0.0" },
+        paths: {
+            "/items/{itemId}": {
+                post: {
+                    operationId: "create-item",
+                    parameters: [
+                        { name: "itemId", in: "path", required: true, schema: { type: "string" } },
+                        { name: "include", in: "query", required: false, schema: { type: "array", items: { type: "string" } } },
+                    ],
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        name: { type: "string", description: "Canonical name" },
+                                        count: { type: "integer", description: "Canonical count" },
+                                    },
+                                    required: ["name"],
+                                },
+                            },
+                        },
+                    },
+                    responses: { "201": { description: "Created" } },
+                },
+            },
+        },
+    });
+    const request: GeneratorRequest = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://catalog.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "POST-/items/{itemId}",
+            enabled: true,
+            toolName: "createCatalogItem",
+            description: "Create a catalog item from UI",
+            bodyContentType: "text/plain",
+            parameters: [
+                {
+                    name: "itemId",
+                    originalName: "itemId",
+                    type: "string",
+                    required: true,
+                    description: "Crafted hidden path id",
+                    location: "path",
+                    hidden: true,
+                },
+                {
+                    name: "item",
+                    originalName: "name",
+                    type: "number",
+                    required: false,
+                    description: "UI item name",
+                    location: "query",
+                    schema: { type: "number" },
+                },
+                {
+                    name: "include",
+                    originalName: "include",
+                    type: "string",
+                    required: true,
+                    description: "Hidden UI include",
+                    location: "query",
+                    hidden: true,
+                },
+            ],
+        }],
+        serverConfig: {
+            name: "catalog",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+        },
+    };
+
+    const plan = buildGenerationPlan(request);
+    const [tool] = plan.tools;
+
+    assert.equal(tool.displayName, "createCatalogItem");
+    assert.equal(tool.description, "Create a catalog item from UI");
+    assert.equal(tool.requestBody?.contentType, "application/json");
+    assert.deepEqual(tool.params.map((param) => [param.argName, param.sourceName, param.location, param.type, param.required, param.description]), [
+        ["itemId", "itemId", "path", "string", true, "Crafted hidden path id"],
+        ["name", "name", "body", "string", true, "Canonical name"],
+        ["count", "count", "body", "integer", false, "Canonical count"],
+    ]);
+    assert.match(plan.warnings.join("\n"), /Ignored hidden override for required path parameter "itemId"/);
+    assert.match(plan.warnings.join("\n"), /Ignored UI parameter override with mismatched location for "name"/);
+});
+
+test("generation ignores ambiguous parameter override fallback matches", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Search", version: "1.0.0" },
+        paths: {
+            "/items": {
+                get: {
+                    operationId: "search-items",
+                    parameters: [
+                        {
+                            name: "id",
+                            in: "query",
+                            required: false,
+                            schema: { type: "string" },
+                            description: "Canonical query id",
+                        },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const request: GeneratorRequest = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://search.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/items",
+            enabled: true,
+            toolName: "searchItems",
+            description: "Search items",
+            parameters: [
+                {
+                    name: "headerId",
+                    originalName: "id",
+                    type: "number",
+                    required: true,
+                    description: "Wrong header id",
+                    hidden: true,
+                },
+                {
+                    name: "cookieId",
+                    originalName: "id",
+                    type: "boolean",
+                    required: true,
+                    description: "Wrong cookie id",
+                },
+            ],
+        }],
+        serverConfig: {
+            name: "search",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+        },
+    };
+
+    const plan = buildGenerationPlan(request);
+    const [tool] = plan.tools;
+
+    assert.deepEqual(tool.params.map((param) => [param.argName, param.sourceName, param.location, param.type, param.required, param.description]), [
+        ["id", "id", "query", "string", false, "Canonical query id"],
+    ]);
+    assert.match(plan.warnings.join("\n"), /Ignored ambiguous UI parameter override for "id"/);
+});
+
+test("generation ignores single wrong-location parameter override", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Search", version: "1.0.0" },
+        paths: {
+            "/items": {
+                get: {
+                    operationId: "search-items",
+                    parameters: [
+                        {
+                            name: "id",
+                            in: "query",
+                            required: false,
+                            schema: { type: "string" },
+                            description: "Canonical query id",
+                        },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const request: GeneratorRequest = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://search.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/items",
+            enabled: true,
+            toolName: "searchItems",
+            description: "Search items",
+            parameters: [{
+                name: "headerId",
+                originalName: "id",
+                type: "number",
+                required: true,
+                description: "Wrong header id",
+                location: "header",
+                hidden: true,
+            }],
+        }],
+        serverConfig: {
+            name: "search",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+        },
+    };
+
+    const plan = buildGenerationPlan(request);
+    const [tool] = plan.tools;
+
+    assert.deepEqual(tool.params.map((param) => [param.argName, param.sourceName, param.location, param.type, param.required, param.description]), [
+        ["id", "id", "query", "string", false, "Canonical query id"],
+    ]);
+    assert.match(plan.warnings.join("\n"), /Ignored UI parameter override with mismatched location for "id"/);
+});
+
+test("generation allows no-location legacy parameter override fallback", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Search", version: "1.0.0" },
+        paths: {
+            "/items": {
+                get: {
+                    operationId: "search-items",
+                    parameters: [
+                        {
+                            name: "id",
+                            in: "query",
+                            required: false,
+                            schema: { type: "string" },
+                            description: "Canonical query id",
+                        },
+                    ],
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+    const request: GeneratorRequest = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://search.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "GET-/items",
+            enabled: true,
+            toolName: "searchItems",
+            description: "Search items",
+            parameters: [{
+                name: "searchId",
+                originalName: "id",
+                type: "number",
+                required: true,
+                description: "Legacy id",
+            }],
+        }],
+        serverConfig: {
+            name: "search",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+        },
+    };
+
+    const [tool] = buildGenerationPlan(request).tools;
+
+    assert.deepEqual(tool.params.map((param) => [param.argName, param.sourceName, param.location, param.type, param.required, param.description]), [
+        ["searchId", "id", "query", "string", false, "Legacy id"],
+    ]);
 });

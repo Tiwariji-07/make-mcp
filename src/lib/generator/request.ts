@@ -12,6 +12,7 @@ const toolParameterSchema = z.object({
     description: z.string().default(""),
     location: parameterLocationSchema.optional(),
     schema: z.record(z.string(), z.unknown()).optional(),
+    hidden: z.boolean().optional(),
 });
 
 const toolSchema = z.object({

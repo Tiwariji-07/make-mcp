@@ -55,6 +55,7 @@ export interface ToolConfig {
         location: "path" | "query" | "header" | "cookie" | "body";
         // For nested objects, store the full schema
         schema?: Record<string, unknown>;
+        hidden?: boolean;
     }[];
     // Full request body schema (resolved)
     bodySchema?: Record<string, unknown>;
@@ -214,6 +215,7 @@ function sanitizeToolConfig(tool: ToolConfig): ToolConfig {
         parameters: tool.parameters.map((parameter, index) => ({
             ...parameter,
             name: sanitizeIdentifier(parameter.name, `param_${index + 1}`),
+            hidden: parameter.hidden || false,
         })),
     };
 }

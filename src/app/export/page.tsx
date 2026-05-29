@@ -118,6 +118,34 @@ export default function ExportPage() {
   if (!spec) return null;
 
   const selectedTools = tools.filter((t) => t.enabled);
+  const generatorPayload = {
+    spec: {
+      info: spec.info,
+      baseUrl: spec.baseUrl,
+      apiModel: spec.apiModel,
+    },
+    tools: selectedTools.map((tool) => ({
+      endpointId: tool.endpointId,
+      enabled: tool.enabled,
+      toolName: tool.toolName,
+      description: tool.description,
+      bodySchema: spec.apiModel ? undefined : tool.bodySchema,
+      bodyContentType: tool.bodyContentType,
+      parameters: tool.parameters.map((parameter) => ({
+        name: parameter.name,
+        originalName: parameter.originalName,
+        type: parameter.type,
+        required: parameter.required,
+        description: parameter.description,
+        location: parameter.location,
+        schema: spec.apiModel ? undefined : parameter.schema,
+        hidden: parameter.hidden,
+      })),
+    })),
+    serverConfig,
+    authConfig,
+    exportConfig,
+  };
   const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
   const detectedAuth = getDetectedAuthOptions(spec);
   const detectedApiKey = detectedAuth.find((o) => o.type === "apiKey");
@@ -149,7 +177,7 @@ export default function ExportPage() {
       const res = await fetch("/api/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spec, tools: selectedTools, serverConfig, authConfig, exportConfig }),
+        body: JSON.stringify(generatorPayload),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
       const blob = await res.blob();
@@ -176,7 +204,7 @@ export default function ExportPage() {
       const res = await fetch("/api/generate?preview=true", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ spec, tools: selectedTools, serverConfig, authConfig, exportConfig }),
+        body: JSON.stringify(generatorPayload),
       });
       if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
       const data = await res.json();
