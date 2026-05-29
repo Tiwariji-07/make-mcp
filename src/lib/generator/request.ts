@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { GeneratorRequest } from "./types.ts";
+import type { ApiModel } from "@/lib/api-model";
 
 const parameterLocationSchema = z.enum(["path", "query", "header", "cookie", "body"]);
 
@@ -56,6 +57,7 @@ const requestSchema = z.object({
             description: z.string().optional(),
         }),
         baseUrl: z.string().default(""),
+        apiModel: z.custom<ApiModel>().optional(),
     }),
     tools: z.array(toolSchema),
     serverConfig: z.object({

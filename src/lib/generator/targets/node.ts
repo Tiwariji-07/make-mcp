@@ -209,12 +209,16 @@ function getHeaders(): Record<string, string> {
 ${authStrategy.applyHeaders ? `${authStrategy.applyHeaders}\n` : ""}  return headers;
 }
 
-const server = new McpServer({
-  name: ${JSON.stringify(plan.server.name)},
-  version: ${JSON.stringify(plan.server.version)},
-});
+function createServer() {
+  const server = new McpServer({
+    name: ${JSON.stringify(plan.server.name)},
+    version: ${JSON.stringify(plan.server.version)},
+  });
 
 ${plan.tools.map((tool) => renderNodeTool(tool, plan)).join("\n\n")}
+
+  return server;
+}
 
 async function main() {
 ${transportStrategy.bootstrap}

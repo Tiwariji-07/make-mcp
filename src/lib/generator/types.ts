@@ -1,3 +1,5 @@
+import type { ApiModel } from "@/lib/api-model";
+
 export const GENERATOR_VERSION = "2.1.0";
 export const GENERATOR_CONTRACT_VERSION = 2;
 
@@ -20,6 +22,7 @@ export interface GeneratorRequest {
     spec: {
         info: { title: string; version: string; description?: string };
         baseUrl: string;
+        apiModel?: ApiModel;
     };
     tools: GeneratorToolConfig[];
     serverConfig: GeneratorServerConfig;

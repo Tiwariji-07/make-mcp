@@ -141,6 +141,9 @@ test("openapi -> node preview matches golden contract", () => {
     assert.match(indexFile, /server\.tool\(\s*"create-customer"/);
     assert.match(indexFile, /headers\["x-api-key"\] = API_KEY/);
     assert.match(indexFile, /"accountId": args\["account_id"\]/);
+    assert.match(indexFile, /if \(req\.method !== "POST"\)/);
+    assert.match(indexFile, /const server = createServer\(\);\n    const transport = new StreamableHTTPServerTransport\(\{ sessionIdGenerator: undefined \}\);/);
+    assert.match(indexFile, /message: "Method not allowed\."/);
   });
 
 test("openapi -> python preview matches golden contract", () => {
@@ -295,4 +298,33 @@ test("node preview preserves cookie params and form encoded bodies", () => {
     assert.match(indexFile, /const formBody = new URLSearchParams\(\);/);
     assert.match(indexFile, /requestHeaders\["Content-Type"\] = "application\/x-www-form-urlencoded"/);
     assert.match(indexFile, /cookiePairs\.push\(`sessionId=/);
+});
+
+test("node sse preview exposes message endpoint and per-session server", () => {
+    const preview = createPreviewResponse({
+        ...postmanBase,
+        serverConfig: {
+            ...postmanBase.serverConfig,
+            transport: "sse",
+        },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: true,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+
+    assert.equal(preview.verification?.status, "passed");
+    const indexFile = getFileContent(preview, "src/index.ts");
+    assert.match(indexFile, /const sessions: Record<string, \{ transport: SSEServerTransport; server: McpServer \}> = \{\};/);
+    assert.match(indexFile, /const transport = new SSEServerTransport\("\/messages", res\);/);
+    assert.match(indexFile, /const server = createServer\(\);/);
+    assert.match(indexFile, /await session\.transport\.handlePostMessage\(req, res\);/);
+    assert.match(indexFile, /Missing sessionId parameter/);
 });

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
+import type { ApiModel } from "@/lib/api-model";
 
 // Types for parsed API spec
 export interface ParsedParameter {
@@ -36,6 +37,7 @@ export interface ParsedSpec {
     endpoints: ParsedEndpoint[];
     securitySchemes: Record<string, unknown>;
     format?: string;
+    apiModel?: ApiModel;
 }
 
 // Tool configuration

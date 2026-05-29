@@ -103,6 +103,17 @@ npm start
 npx tsc --noEmit
 ```
 
+## 🧭 Architecture
+
+MakeMCP is designed as a compiler-style generator:
+
+```text
+Source spec -> Canonical API model -> Tool plan -> Project plan -> Generated app -> Verification
+```
+
+See [docs/architecture.md](docs/architecture.md) for the target architecture and
+ownership boundaries.
+
 ## 📄 License
 
 MIT © [Tiwariji-07](https://github.com/Tiwariji-07)

@@ -5,7 +5,9 @@ import {
     type GenerationTool,
     type GeneratorRequest,
     type GenerationParam,
+    type GeneratorToolParameter,
 } from "./types.ts";
+import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter } from "@/lib/api-model";
 import {
     getBodyContentKind,
     getDefaultFeatures,
@@ -54,20 +56,48 @@ function normalizeAuth(input: GeneratorRequest["authConfig"]): GenerationPlan["a
     return { strategy: "none", type: input.type };
 }
 
-function normalizeTool(tool: GeneratorRequest["tools"][number], toolIndex: number, warnings: string[]): GenerationTool {
-    const { method, path } = parseEndpointId(tool.endpointId);
+function getCanonicalOperation(apiModel: ApiModel | undefined, endpointId: string): ApiOperation | undefined {
+    return apiModel?.operations.find((operation) => operation.id === endpointId);
+}
+
+function getCanonicalParameter(operation: ApiOperation | undefined, parameter: GeneratorToolParameter): ApiParameter | undefined {
+    return operation?.parameters.find((candidate) =>
+        candidate.name === parameter.originalName ||
+        candidate.name === parameter.name
+    );
+}
+
+function getCanonicalRequestMedia(operation: ApiOperation | undefined, preferredContentType?: string): ApiMediaType | undefined {
+    if (!operation?.requestBody?.content.length) return undefined;
+
+    return operation.requestBody.content.find((media) => media.mediaType === preferredContentType)
+        || operation.requestBody.content[0];
+}
+
+function normalizeTool(
+    tool: GeneratorRequest["tools"][number],
+    toolIndex: number,
+    warnings: string[],
+    apiModel?: ApiModel
+): GenerationTool {
+    const canonicalOperation = getCanonicalOperation(apiModel, tool.endpointId);
+    const parsedEndpoint = parseEndpointId(tool.endpointId);
+    const method = canonicalOperation?.method || parsedEndpoint.method;
+    const path = canonicalOperation?.path || parsedEndpoint.path;
     const seenArgs = new Set<string>();
     const displayName = tool.toolName.trim() || `tool_${toolIndex + 1}`;
     const functionName = makeUniqueIdentifier(displayName, new Set<string>(), `tool_${toolIndex + 1}`);
+    const canonicalMedia = getCanonicalRequestMedia(canonicalOperation, tool.bodyContentType);
 
     if (displayName !== tool.toolName) {
         warnings.push(`Trimmed empty or padded tool name for ${tool.endpointId}`);
     }
 
     const params: GenerationParam[] = tool.parameters.map((parameter, parameterIndex) => {
+        const canonicalParameter = getCanonicalParameter(canonicalOperation, parameter);
         const desired = parameter.name || parameter.originalName || `param_${parameterIndex + 1}`;
         const argName = makeUniqueIdentifier(desired, seenArgs, `param_${parameterIndex + 1}`);
-        const location = getParameterLocation(parameter, path, method);
+        const location = canonicalParameter?.in || getParameterLocation(parameter, path, method);
 
         if (argName !== desired) {
             warnings.push(`Normalized parameter "${desired}" to "${argName}" for ${displayName}`);
@@ -75,22 +105,24 @@ function normalizeTool(tool: GeneratorRequest["tools"][number], toolIndex: numbe
 
         return {
             argName,
-            sourceName: parameter.originalName || parameter.name,
+            sourceName: canonicalParameter?.name || parameter.originalName || parameter.name,
             type: parameter.type,
-            required: parameter.required,
-            description: parameter.description,
+            required: canonicalParameter?.required ?? parameter.required,
+            description: parameter.description || canonicalParameter?.description || "",
             location,
-            schema: parameter.schema,
+            schema: canonicalParameter?.schema || parameter.schema,
         };
     });
 
     const bodyParams = params.filter((param) => param.location === "body");
-    const contentKind = getBodyContentKind(tool, params);
+    const bodySchema = canonicalMedia?.schema || tool.bodySchema;
+    const bodyContentType = canonicalMedia?.mediaType || tool.bodyContentType;
+    const contentKind = getBodyContentKind({ ...tool, bodySchema, bodyContentType }, params);
     const requestBody = contentKind
         ? {
-            contentType: tool.bodyContentType || "application/json",
+            contentType: bodyContentType || "application/json",
             contentKind,
-            schema: tool.bodySchema,
+            schema: bodySchema,
             params: bodyParams,
         }
         : undefined;
@@ -117,7 +149,7 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
     const seenFunctionNames = new Set<string>();
 
     const tools = request.tools.map((tool, index) => {
-        const normalized = normalizeTool(tool, index, warnings);
+        const normalized = normalizeTool(tool, index, warnings, request.spec.apiModel);
         const uniqueDisplayName = makeUniqueDisplayName(
             normalized.displayName,
             seenToolNames,
@@ -152,7 +184,7 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
             title: request.spec.info.title,
             version: request.spec.info.version,
             description: request.spec.info.description,
-            baseUrl: request.spec.baseUrl,
+            baseUrl: request.spec.apiModel?.baseUrls[0] || request.spec.baseUrl,
         },
         server: request.serverConfig,
         runtime: {

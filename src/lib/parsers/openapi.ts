@@ -1,7 +1,9 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
-import { ParsedSpec, ParsedEndpoint, ParsedParameter } from "@/store/project-store";
+import { ParsedSpec } from "@/store/project-store";
+import { buildOpenAPIModel } from "@/lib/api-model";
+import { apiModelToParsedSpec } from "@/lib/api-model/legacy";
 
-interface OpenAPISpec {
+interface OpenAPISpec extends Record<string, unknown> {
     openapi?: string;
     swagger?: string;
     info: {
@@ -9,15 +11,16 @@ interface OpenAPISpec {
         version: string;
         description?: string;
     };
-    servers?: Array<{ url: string }>;
+    servers?: Array<{ url: string; description?: string; variables?: Record<string, unknown> }>;
     host?: string;
     basePath?: string;
     schemes?: string[];
     paths: Record<string, Record<string, OpenAPIOperation>>;
     components?: {
-        securitySchemes?: Record<string, unknown>;
+        securitySchemes?: Record<string, Record<string, unknown>>;
     };
-    securityDefinitions?: Record<string, unknown>;
+    securityDefinitions?: Record<string, Record<string, unknown>>;
+    security?: Record<string, string[]>[];
 }
 
 interface OpenAPIOperation {
@@ -46,85 +49,7 @@ export async function parseOpenAPISpec(input: string | object): Promise<ParsedSp
     try {
         // Parse and dereference the spec - this resolves all $refs!
         const api = (await SwaggerParser.dereference(input as string)) as OpenAPISpec;
-
-        // Extract base URL
-        let baseUrl = "";
-        if (api.servers && api.servers.length > 0) {
-            baseUrl = api.servers[0].url;
-        } else if (api.host) {
-            const scheme = api.schemes?.[0] || "https";
-            baseUrl = `${scheme}://${api.host}${api.basePath || ""}`;
-        }
-
-        // Parse endpoints
-        const endpoints: ParsedEndpoint[] = [];
-        const methods = ["get", "post", "put", "patch", "delete"] as const;
-
-        for (const [path, pathItem] of Object.entries(api.paths || {})) {
-            for (const method of methods) {
-                const operation = pathItem[method];
-                if (!operation) continue;
-
-                // Separate body params from other params (Swagger 2.0 style)
-                const bodyParam = (operation.parameters || []).find(p => p.in === "body") as OpenAPIParameter | undefined;
-                const otherParams = (operation.parameters || []).filter(p => p.in !== "body");
-
-                const parameters: ParsedParameter[] = otherParams.map((p) => ({
-                    name: p.name,
-                    in: p.in as ParsedParameter["in"],
-                    required: p.required || false,
-                    type: (p.schema as { type?: string })?.type || p.type || "string",
-                    description: p.description,
-                }));
-
-                // Handle request body - either from OpenAPI 3.0 requestBody or Swagger 2.0 body param
-                let requestBody = undefined;
-
-                if (operation.requestBody) {
-                    // OpenAPI 3.0 style
-                    const content = operation.requestBody.content;
-                    const contentType = content ? Object.keys(content)[0] : "application/json";
-                    requestBody = {
-                        required: operation.requestBody.required || false,
-                        contentType,
-                        schema: content?.[contentType]?.schema || {},
-                    };
-                } else if (bodyParam && bodyParam.schema) {
-                    // Swagger 2.0 style - body param with full dereferenced schema
-                    requestBody = {
-                        required: bodyParam.required || false,
-                        contentType: "application/json",
-                        schema: bodyParam.schema, // Full resolved schema from dereference!
-                    };
-                }
-
-                endpoints.push({
-                    id: `${method.toUpperCase()}-${path}`,
-                    method: method.toUpperCase() as ParsedEndpoint["method"],
-                    path,
-                    operationId: operation.operationId,
-                    summary: operation.summary,
-                    description: operation.description,
-                    tags: operation.tags,
-                    parameters,
-                    requestBody,
-                });
-            }
-        }
-
-        // Extract security schemes
-        const securitySchemes = api.components?.securitySchemes || api.securityDefinitions || {};
-
-        return {
-            info: {
-                title: api.info.title,
-                version: api.info.version,
-                description: api.info.description,
-            },
-            baseUrl,
-            endpoints,
-            securitySchemes,
-        };
+        return apiModelToParsedSpec(buildOpenAPIModel(api));
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to parse OpenAPI spec";
         throw new Error(`OpenAPI parsing error: ${message}`);

@@ -14,6 +14,15 @@ import type { GeneratedProject, VerificationCheck, VerificationReport } from "./
 
 const require = createRequire(import.meta.url);
 
+function resolveTypeScriptCompilerPath(): string {
+    const cwdPath = join(process.cwd(), "node_modules", "typescript", "lib", "tsc.js");
+    if (existsSync(cwdPath)) {
+        return cwdPath;
+    }
+
+    return require.resolve("typescript/lib/tsc.js");
+}
+
 function writeProjectToTempDir(project: GeneratedProject): string {
     const tempDir = mkdtempSync(join(tmpdir(), "makemcp-project-"));
 
@@ -86,6 +95,9 @@ declare module "@modelcontextprotocol/sdk/server/stdio.js" {
 declare module "@modelcontextprotocol/sdk/server/sse.js" {
   export class SSEServerTransport {
     constructor(path: string, response: unknown);
+    sessionId: string;
+    onclose?: () => void;
+    handlePostMessage(request: unknown, response: unknown): Promise<void>;
   }
 }
 
@@ -162,7 +174,7 @@ function verifyNodeProject(project: GeneratedProject): VerificationCheck {
         }
 
         const { configPath } = createNodeVerificationFiles(tempDir);
-        const tscPath = require.resolve("typescript/lib/tsc.js");
+        const tscPath = resolveTypeScriptCompilerPath();
         const result = spawnSync(process.execPath, [tscPath, "--noEmit", "-p", configPath], {
             cwd: tempDir,
             encoding: "utf8",
