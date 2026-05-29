@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseOpenAPIFromContent } from "./openapi.ts";
+import { parseOpenAPIFromContent, validateSpec } from "./openapi.ts";
 import type { ApiModel, ApiOperation } from "../api-model/types.ts";
 
 const fixturesDir = join(dirname(fileURLToPath(import.meta.url)), "__fixtures__");
@@ -159,4 +159,158 @@ test("parser fixture: Swagger 2.0 body param", async () => {
     assert.equal(createPet.requestBody?.content[0].mediaType, "application/json");
     assert.deepEqual(createPet.requestBody?.content[0].schema?.required, ["name"]);
     assert.equal(response.content?.[0].mediaType, "application/json");
+});
+
+test("validation warns for missing base URL", async () => {
+    const parsed = await parseOpenAPIFromContent(JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "No Server API", version: "1.0.0" },
+        paths: {
+            "/status": {
+                get: {
+                    operationId: "getStatus",
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    }), "no-server.openapi.json");
+
+    const result = validateSpec(parsed);
+
+    assert.equal(result.isValid, true);
+    assert.ok(result.warnings.some((warning) => warning.code === "missing-base-url"));
+});
+
+test("validation warns for manual-review parser risks", async () => {
+    const parsed = await parseOpenAPIFromContent(JSON.stringify({
+        openapi: "3.1.0",
+        info: { title: "Risky API", version: "1.0.0" },
+        servers: [{
+            url: "https://{tenant}.risky.example.com/{version}",
+            variables: {
+                tenant: { default: "demo" },
+                version: { default: "v1" },
+            },
+        }],
+        components: {
+            securitySchemes: {
+                bearerAuth: { type: "http", scheme: "bearer" },
+                apiKey: { type: "apiKey", in: "header", name: "X-API-Key" },
+            },
+        },
+        security: [{ bearerAuth: [] }, { apiKey: [] }],
+        paths: {
+            "/exports": {
+                post: {
+                    operationId: "createExport",
+                    security: [{ bearerAuth: [], apiKey: [] }],
+                    parameters: [{
+                        name: "filter",
+                        in: "query",
+                        schema: {
+                            oneOf: [
+                                { type: "string" },
+                                { type: "integer" },
+                            ],
+                        },
+                    }],
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        destination: {
+                                            type: "object",
+                                            properties: {
+                                                type: { type: "string" },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                            "application/xml": {
+                                schema: { type: "string" },
+                            },
+                        },
+                    },
+                    responses: {
+                        "200": {
+                            description: "OK",
+                            content: {
+                                "application/json": { schema: { type: "object" } },
+                                "text/csv": { schema: { type: "string" } },
+                            },
+                        },
+                    },
+                },
+            },
+            "/assets": {
+                post: {
+                    operationId: "uploadAsset",
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "multipart/form-data": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        file: { type: "string", format: "binary" },
+                                    },
+                                    required: ["file"],
+                                },
+                            },
+                        },
+                    },
+                    responses: { "201": { description: "Created" } },
+                },
+            },
+        },
+    }), "risky.openapi.json");
+
+    const result = validateSpec(parsed);
+    const warningCodes = result.warnings.map((warning) => warning.code);
+
+    assert.ok(warningCodes.includes("unsupported-schema-feature"));
+    assert.ok(warningCodes.includes("ambiguous-auth"));
+    assert.ok(warningCodes.includes("multiple-content-types"));
+    assert.ok(warningCodes.includes("binary-file-upload"));
+    assert.ok(warningCodes.includes("dynamic-server-variables"));
+    assert.ok(warningCodes.includes("raw-body"));
+    assert.ok(warningCodes.includes("manual-review"));
+    assert.ok(result.warnings.some((warning) =>
+        warning.code === "manual-review" &&
+        warning.path === "POST /exports" &&
+        warning.message.includes("ambiguous auth") &&
+        warning.message.includes("raw body")
+    ));
+});
+
+test("validation distinguishes unknown auth schemes from ambiguous auth", async () => {
+    const parsed = await parseOpenAPIFromContent(JSON.stringify({
+        openapi: "3.0.3",
+        info: { title: "Unknown Auth API", version: "1.0.0" },
+        servers: [{ url: "https://auth.example.com" }],
+        security: [{ missingAuth: [] }],
+        paths: {
+            "/secure": {
+                get: {
+                    operationId: "getSecure",
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    }), "unknown-auth.openapi.json");
+
+    const result = validateSpec(parsed);
+    const mismatchWarning = result.warnings.find((warning) =>
+        warning.message.includes("auth schemes that were not found")
+    );
+
+    assert.equal(mismatchWarning?.code, "auth-scheme-mismatch");
+    assert.equal(result.warnings.some((warning) =>
+        warning.code === "ambiguous-auth" &&
+        warning.message.includes("auth schemes that were not found")
+    ), false);
 });
