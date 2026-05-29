@@ -29,7 +29,12 @@ function getEnvExample(plan: GenerationPlan): string {
 }
 
 function getNodeBodyExpression(requestBody: GenerationRequestBody): string {
-    if (requestBody.contentKind === "json-raw" || requestBody.contentKind === "text" || requestBody.contentKind === "binary") {
+    if (
+        requestBody.contentKind === "rawJsonObject" ||
+        requestBody.contentKind === "rawArray" ||
+        requestBody.contentKind === "text" ||
+        requestBody.contentKind === "binary"
+    ) {
         const param = requestBody.params[0];
         return `args[${JSON.stringify(param?.argName || "body")}]`;
     }
@@ -39,6 +44,24 @@ function getNodeBodyExpression(requestBody: GenerationRequestBody): string {
         .join("\n");
 
     return `{\n${properties}\n    }`;
+}
+
+function isMultipartBinaryParam(param: GenerationRequestBody["params"][number]): boolean {
+    return param.schema?.format === "binary" || param.schema?.type === "file";
+}
+
+function renderNodeMultipartAppend(param: GenerationRequestBody["params"][number]): string {
+    const argName = JSON.stringify(param.argName);
+    const sourceName = JSON.stringify(param.sourceName);
+
+    if (!isMultipartBinaryParam(param)) {
+        return `      if (args[${argName}] !== undefined) formBody.append(${sourceName}, String(args[${argName}]));`;
+    }
+
+    return `      if (args[${argName}] !== undefined) {
+        const fileBytes = Buffer.from(String(args[${argName}]), "base64");
+        formBody.append(${sourceName}, new Blob([fileBytes]), ${sourceName});
+      }`;
 }
 
 function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
@@ -51,13 +74,14 @@ function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
     }
 
     switch (requestBody.contentKind) {
-        case "json-object":
+        case "flattenedObject":
             return {
                 setup: "",
                 headerLines: [`      requestHeaders["Content-Type"] = ${JSON.stringify(requestBody.contentType)};`],
                 bodyOption: `        body: JSON.stringify(${getNodeBodyExpression(requestBody)}),\n`,
             };
-        case "json-raw":
+        case "rawJsonObject":
+        case "rawArray":
             return {
                 setup: "",
                 headerLines: [`      requestHeaders["Content-Type"] = ${JSON.stringify(requestBody.contentType)};`],
@@ -69,7 +93,7 @@ function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
                 headerLines: [`      requestHeaders["Content-Type"] = ${JSON.stringify(requestBody.contentType)};`],
                 bodyOption: `        body: String(${getNodeBodyExpression(requestBody)} ?? ""),\n`,
             };
-        case "form-urlencoded": {
+        case "formUrlencoded": {
             const setupLines = [
                 "      const formBody = new URLSearchParams();",
                 ...requestBody.params.map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) formBody.append(${JSON.stringify(param.sourceName)}, String(args[${JSON.stringify(param.argName)}]));`),
@@ -84,7 +108,7 @@ function renderNodeRequestBody(requestBody?: GenerationRequestBody): {
         case "multipart": {
             const setupLines = [
                 "      const formBody = new FormData();",
-                ...requestBody.params.map((param) => `      if (args[${JSON.stringify(param.argName)}] !== undefined) formBody.append(${JSON.stringify(param.sourceName)}, String(args[${JSON.stringify(param.argName)}]));`),
+                ...requestBody.params.map(renderNodeMultipartAppend),
             ];
 
             return {

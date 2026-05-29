@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { buildOpenAPIModel } from "../api-model/openapi.ts";
 import { createPreviewResponse, type GeneratorRequest } from "./index.ts";
 
 const openApiBase: Omit<GeneratorRequest, "exportConfig"> = {
@@ -172,6 +173,77 @@ test("openapi -> python preview matches golden contract", () => {
     assert.match(serverFile, /json_body\["accountId"\] = account_id/);
 });
 
+test("node preview keeps complex json bodies as a single body argument", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Profiles API", version: "1.0.0" },
+        paths: {
+            "/profiles": {
+                post: {
+                    operationId: "createProfile",
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        name: { type: "string" },
+                                        profile: {
+                                            type: "object",
+                                            properties: { city: { type: "string" } },
+                                        },
+                                    },
+                                    required: ["name", "profile"],
+                                },
+                            },
+                        },
+                    },
+                    responses: { "201": { description: "Created" } },
+                },
+            },
+        },
+    });
+    const preview = createPreviewResponse({
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://profiles.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "POST-/profiles",
+            enabled: true,
+            toolName: "createProfile",
+            description: "Create profile",
+            parameters: [],
+        }],
+        serverConfig: {
+            name: "profiles-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+
+    const indexFile = getFileContent(preview, "src/index.ts");
+    assert.match(indexFile, /"body": z\.object/);
+    assert.match(indexFile, /body: JSON\.stringify\(args\["body"\]\)/);
+    assert.doesNotMatch(indexFile, /"profile": args\["profile"\]/);
+});
+
 test("postman -> node preview preserves path and headers", () => {
     const preview = createPreviewResponse({
         ...postmanBase,
@@ -298,6 +370,97 @@ test("node preview preserves cookie params and form encoded bodies", () => {
     assert.match(indexFile, /const formBody = new URLSearchParams\(\);/);
     assert.match(indexFile, /requestHeaders\["Content-Type"\] = "application\/x-www-form-urlencoded"/);
     assert.match(indexFile, /cookiePairs\.push\(`sessionId=/);
+});
+
+test("previews render multipart binary fields as file uploads", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Assets API", version: "1.0.0" },
+        paths: {
+            "/assets": {
+                post: {
+                    operationId: "uploadAsset",
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "multipart/form-data": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        file: { type: "string", format: "binary" },
+                                        label: { type: "string" },
+                                    },
+                                    required: ["file"],
+                                },
+                            },
+                        },
+                    },
+                    responses: { "201": { description: "Uploaded" } },
+                },
+            },
+        },
+    });
+    const baseRequest: Omit<GeneratorRequest, "exportConfig"> = {
+        spec: {
+            info: apiModel.info,
+            baseUrl: "https://assets.example.com",
+            apiModel,
+        },
+        tools: [{
+            endpointId: "POST-/assets",
+            enabled: true,
+            toolName: "uploadAsset",
+            description: "Upload asset",
+            parameters: [],
+        }],
+        serverConfig: {
+            name: "assets-mcp",
+            version: "1.0.0",
+            host: "localhost",
+            port: 8080,
+            transport: "stdio",
+        },
+        authConfig: { type: "none" },
+    };
+
+    const nodePreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "node",
+            framework: "mcp-ts-sdk",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const nodeIndex = getFileContent(nodePreview, "src/index.ts");
+    assert.match(nodeIndex, /"file": z\.string\(\)\.describe\("Base64-encoded file content\."\)/);
+    assert.match(nodeIndex, /const fileBytes = Buffer\.from\(String\(args\["file"\]\), "base64"\);/);
+    assert.match(nodeIndex, /formBody\.append\("file", new Blob\(\[fileBytes\]\), "file"\);/);
+    assert.match(nodeIndex, /formBody\.append\("label", String\(args\["label"\]\)\);/);
+
+    const pythonPreview = createPreviewResponse({
+        ...baseRequest,
+        exportConfig: {
+            language: "python",
+            framework: "fastmcp",
+            packageManager: "npm",
+            features: {
+                documentation: false,
+                docker: false,
+                tests: false,
+                verification: true,
+            },
+        },
+    });
+    const serverFile = getFileContent(pythonPreview, "src/server.py");
+    assert.match(serverFile, /import base64/);
+    assert.match(serverFile, /multipart_files\["file"\] = \("file", base64\.b64decode\(file\), "application\/octet-stream"\)/);
+    assert.match(serverFile, /multipart_files\["label"\] = \(None, str\(label\)\)/);
 });
 
 test("node sse preview exposes message endpoint and per-session server", () => {

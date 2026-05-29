@@ -51,7 +51,7 @@ test("planner converts ApiModel operations into tool plans", () => {
     assert.equal(plan.description, "Update customer");
     assert.equal(plan.authStrategy.strategy, "bearer");
     assert.equal(plan.authStrategy.source, "global");
-    assert.equal(plan.requestBodyStrategy.contentKind, "json-object");
+    assert.equal(plan.requestBodyStrategy.contentKind, "flattenedObject");
     assert.equal(plan.requestBodyStrategy.required, true);
     assert.deepEqual(plan.serializationStrategy.path.map((param) => param.sourceName), ["id"]);
     assert.deepEqual(plan.serializationStrategy.query.map((param) => param.sourceName), ["include"]);
@@ -105,6 +105,174 @@ test("planner flags binary request bodies and unsupported auth for manual review
         "binary-request-body",
         "unsupported-auth",
     ]);
+});
+
+test("planner only flattens shallow simple JSON object bodies", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Bodies", version: "1.0.0" },
+        paths: {
+            "/nested": {
+                post: {
+                    operationId: "nestedBody",
+                    requestBody: {
+                        required: true,
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        name: { type: "string" },
+                                        profile: {
+                                            type: "object",
+                                            properties: { city: { type: "string" } },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/union": {
+                post: {
+                    operationId: "unionBody",
+                    requestBody: {
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    oneOf: [
+                                        { type: "object", properties: { email: { type: "string" } } },
+                                        { type: "object", properties: { phone: { type: "string" } } },
+                                    ],
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/map": {
+                post: {
+                    operationId: "mapBody",
+                    requestBody: {
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "object",
+                                    additionalProperties: { type: "string" },
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/array": {
+                post: {
+                    operationId: "arrayBody",
+                    requestBody: {
+                        content: {
+                            "application/json": {
+                                schema: {
+                                    type: "array",
+                                    items: { type: "string" },
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+
+    const plans = buildToolPlans(apiModel);
+    const byName = Object.fromEntries(plans.map((plan) => [plan.toolName, plan]));
+
+    for (const name of ["nestedBody", "unionBody", "mapBody"]) {
+        assert.equal(byName[name].requestBodyStrategy.contentKind, "rawJsonObject");
+        assert.deepEqual(byName[name].parameters.map((param) => [param.argName, param.sourceName, param.location]), [
+            ["body", "body", "body"],
+        ]);
+    }
+
+    assert.equal(byName.arrayBody.requestBodyStrategy.contentKind, "rawArray");
+    assert.deepEqual(byName.arrayBody.parameters.map((param) => [param.argName, param.sourceName, param.location]), [
+        ["body", "body", "body"],
+    ]);
+});
+
+test("planner classifies non-json request body strategies", () => {
+    const apiModel = buildOpenAPIModel({
+        openapi: "3.1.0",
+        info: { title: "Media", version: "1.0.0" },
+        paths: {
+            "/text": {
+                post: {
+                    operationId: "textBody",
+                    requestBody: {
+                        content: {
+                            "text/plain": {
+                                schema: { type: "string" },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/form": {
+                post: {
+                    operationId: "formBody",
+                    requestBody: {
+                        content: {
+                            "application/x-www-form-urlencoded": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        username: { type: "string" },
+                                        remember: { type: "boolean" },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+            "/multipart": {
+                post: {
+                    operationId: "multipartBody",
+                    requestBody: {
+                        content: {
+                            "multipart/form-data": {
+                                schema: {
+                                    type: "object",
+                                    properties: {
+                                        file: { type: "string", format: "binary" },
+                                        label: { type: "string" },
+                                    },
+                                },
+                            },
+                        },
+                    },
+                    responses: { "200": { description: "OK" } },
+                },
+            },
+        },
+    });
+
+    const plans = buildToolPlans(apiModel);
+    const byName = Object.fromEntries(plans.map((plan) => [plan.toolName, plan]));
+
+    assert.equal(byName.textBody.requestBodyStrategy.contentKind, "text");
+    assert.deepEqual(byName.textBody.parameters.map((param) => param.argName), ["body"]);
+    assert.equal(byName.formBody.requestBodyStrategy.contentKind, "formUrlencoded");
+    assert.deepEqual(byName.formBody.parameters.map((param) => param.argName), ["username", "remember"]);
+    assert.equal(byName.multipartBody.requestBodyStrategy.contentKind, "multipart");
+    assert.deepEqual(byName.multipartBody.parameters.map((param) => param.argName), ["file", "label"]);
+    assert.equal(byName.multipartBody.parameters[0].description, "Base64-encoded file content.");
 });
 
 test("generation plan consumes ToolPlan for canonical ApiModel operations", () => {
@@ -170,7 +338,7 @@ test("generation plan consumes ToolPlan for canonical ApiModel operations", () =
         ["itemId", "itemId", "path"],
         ["name", "name", "body"],
     ]);
-    assert.equal(tool.requestBody?.contentKind, "json-object");
+    assert.equal(tool.requestBody?.contentKind, "flattenedObject");
 });
 
 test("generation merges UI choices onto canonical operations without replacing API metadata", () => {

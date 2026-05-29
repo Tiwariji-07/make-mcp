@@ -16,7 +16,7 @@ import type {
     ToolSerializationPlan,
     ToolSerializedParameter,
 } from "./types.ts";
-import { getBodyContentKind, makeUniqueIdentifier, toSafeIdentifier } from "./utils.ts";
+import { getBodyContentKind, isBinarySchema, isShallowSimpleObjectSchema, makeUniqueIdentifier, toSafeIdentifier } from "./utils.ts";
 
 function operationFallbackName(operation: ApiOperation): string {
     return `${operation.method.toLowerCase()}_${operation.path.replace(/[{}]/g, "")}`;
@@ -52,6 +52,14 @@ function getSchemaProperties(schema: Record<string, unknown>): Record<string, Re
     return (schema.properties || {}) as Record<string, Record<string, unknown>>;
 }
 
+function getBodyParameterDescription(schema: Record<string, unknown>, contentKind: ToolRequestBodyPlan["contentKind"]): string {
+    const description = typeof schema.description === "string" ? schema.description : "";
+    if (contentKind !== "multipart" || !isBinarySchema(schema)) return description;
+
+    const multipartDescription = "Base64-encoded file content.";
+    return description ? `${description} ${multipartDescription}` : multipartDescription;
+}
+
 function buildParameterPlans(parameters: ApiParameter[], seenArgs: Set<string>): ToolPlanParameter[] {
     return parameters.map((parameter, index) => ({
         argName: makeUniqueIdentifier(parameter.name, seenArgs, `param_${index + 1}`),
@@ -68,18 +76,22 @@ function buildParameterPlans(parameters: ApiParameter[], seenArgs: Set<string>):
 function buildBodyParameterPlans(
     media: ApiMediaType | undefined,
     requiredBody: boolean,
-    seenArgs: Set<string>
+    seenArgs: Set<string>,
+    contentKind: ToolRequestBodyPlan["contentKind"]
 ): ToolPlanParameter[] {
     if (!media?.schema) return [];
 
-    if (isObjectWithNamedProperties(media.schema)) {
+    if (
+        (contentKind === "flattenedObject" && isShallowSimpleObjectSchema(media.schema)) ||
+        (["formUrlencoded", "multipart"].includes(contentKind || "") && isObjectWithNamedProperties(media.schema))
+    ) {
         const requiredFields = new Set((media.schema.required || []) as string[]);
         return Object.entries(getSchemaProperties(media.schema)).map(([name, schema], index) => ({
             argName: makeUniqueIdentifier(name, seenArgs, `body_${index + 1}`),
             sourceName: name,
             location: "body",
             required: requiredBody && requiredFields.has(name),
-            description: typeof schema.description === "string" ? schema.description : "",
+            description: getBodyParameterDescription(schema, contentKind),
             schema,
         }));
     }
@@ -196,8 +208,7 @@ function buildAuthPlan(
 
 function getRequestBodyStrategy(
     operation: ApiOperation,
-    media: ApiMediaType | undefined,
-    parameters: ToolPlanParameter[]
+    media: ApiMediaType | undefined
 ): ToolRequestBodyPlan {
     if (!media) {
         return { required: false };
@@ -213,7 +224,7 @@ function getRequestBodyStrategy(
             bodySchema: media.schema,
             bodyContentType: media.mediaType,
         },
-        parameters.filter((parameter) => parameter.location === "body")
+        []
     );
 
     return {
@@ -292,11 +303,11 @@ export function planToolFromOperation(
     const media = options.preferredContentType
         ? operation.requestBody?.content.find((candidate) => candidate.mediaType === options.preferredContentType) || chooseRequestMedia(operation)
         : chooseRequestMedia(operation);
+    const requestBodyStrategy = getRequestBodyStrategy(operation, media);
     const parameters = [
         ...buildParameterPlans(operation.parameters, seenArgs),
-        ...buildBodyParameterPlans(media, operation.requestBody?.required || false, seenArgs),
+        ...buildBodyParameterPlans(media, operation.requestBody?.required || false, seenArgs, requestBodyStrategy.contentKind),
     ];
-    const requestBodyStrategy = getRequestBodyStrategy(operation, media, parameters);
 
     pushRequestBodyReviewFlags(requestBodyStrategy, manualReview);
 

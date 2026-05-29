@@ -73,6 +73,23 @@ This is where intentional simplification belongs. For example, a shallow JSON
 object can be flattened into separate tool arguments, while complex nested or
 union schemas should remain a single `body` argument.
 
+Request body strategies are explicit:
+
+- `flattenedObject`: shallow, simple JSON object exposed as individual tool
+  parameters.
+- `rawJsonObject`: complex JSON object exposed as one `body` parameter.
+- `rawArray`: JSON array exposed as one `body` parameter.
+- `text`: text media types exposed as one `body` parameter.
+- `formUrlencoded`: `application/x-www-form-urlencoded` fields exposed as form
+  parameters.
+- `multipart`: `multipart/form-data` fields exposed as multipart parameters;
+  file fields use base64-encoded string inputs and are rendered as file parts.
+- `binary`: binary media types exposed as one `body` parameter.
+
+Flatten only shallow JSON objects whose properties are simple scalar schemas.
+Nested objects, unions, arrays, and map-like schemas stay as a single `body`
+argument so generated clients do not silently reshape request semantics.
+
 ### 4. Project Plan
 
 The project plan describes the generated app:

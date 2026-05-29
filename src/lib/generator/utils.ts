@@ -103,6 +103,44 @@ export function getParameterLocation(
     return "query";
 }
 
+function hasSchemaComposition(schema: Record<string, unknown>): boolean {
+    return Boolean(schema.oneOf || schema.anyOf || schema.allOf || Array.isArray(schema.type));
+}
+
+function isSimpleScalarSchema(schema: Record<string, unknown>): boolean {
+    if (hasSchemaComposition(schema)) return false;
+    if (schema.properties || schema.items || schema.additionalProperties) return false;
+
+    if (Array.isArray(schema.enum)) {
+        return schema.enum.every((value) =>
+            typeof value === "string" ||
+            typeof value === "number" ||
+            typeof value === "boolean" ||
+            value === null
+        );
+    }
+
+    return ["string", "number", "integer", "boolean"].includes(String(schema.type || ""));
+}
+
+export function isBinarySchema(schema?: Record<string, unknown>): boolean {
+    return schema?.format === "binary" || schema?.type === "file";
+}
+
+export function isShallowSimpleObjectSchema(schema?: Record<string, unknown>): boolean {
+    if (!schema || hasSchemaComposition(schema)) return false;
+    if (schema.type && schema.type !== "object") return false;
+    if (schema.additionalProperties) return false;
+    if (!schema.properties || typeof schema.properties !== "object" || Array.isArray(schema.properties)) return false;
+
+    const properties = schema.properties as Record<string, Record<string, unknown>>;
+    return Object.values(properties).every(isSimpleScalarSchema);
+}
+
+function isJsonContentType(contentType: string): boolean {
+    return contentType.includes("application/json") || contentType.includes("+json");
+}
+
 export function getBodyContentKind(
     tool: GeneratorToolConfig,
     params: { location: ParamLocation; sourceName: string }[]
@@ -113,20 +151,10 @@ export function getBodyContentKind(
     }
 
     const contentType = (tool.bodyContentType || "application/json").toLowerCase();
-    const bodyType = tool.bodySchema?.type;
-    const isRawBody =
-        bodyParams.length === 1 &&
-        (
-            bodyParams[0].sourceName === "body" ||
-            bodyType === "array" ||
-            bodyType === "string" ||
-            bodyType === "number" ||
-            bodyType === "integer" ||
-            bodyType === "boolean"
-        );
+    const schema = tool.bodySchema;
 
     if (contentType.includes("application/x-www-form-urlencoded")) {
-        return "form-urlencoded";
+        return "formUrlencoded";
     }
 
     if (contentType.includes("multipart/form-data")) {
@@ -145,7 +173,31 @@ export function getBodyContentKind(
         return "binary";
     }
 
-    return isRawBody ? "json-raw" : "json-object";
+    if (schema?.format === "binary") {
+        return "binary";
+    }
+
+    if (!isJsonContentType(contentType)) {
+        return undefined;
+    }
+
+    if (schema?.type === "array") {
+        return "rawArray";
+    }
+
+    if (isShallowSimpleObjectSchema(schema)) {
+        return "flattenedObject";
+    }
+
+    if (schema) {
+        return "rawJsonObject";
+    }
+
+    if (bodyParams.length === 1 && bodyParams[0].sourceName === "body") {
+        return "rawJsonObject";
+    }
+
+    return "flattenedObject";
 }
 
 export function getTransportStrategy(transport: Transport): TransportStrategy {

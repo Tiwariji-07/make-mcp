@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { ApiModel } from "@/lib/api-model";
+import { getBodyContentKind, isBinarySchema, isShallowSimpleObjectSchema } from "@/lib/generator/utils";
 
 // Types for parsed API spec
 export interface ParsedParameter {
@@ -351,6 +352,7 @@ function createToolConfig(endpoint: ParsedEndpoint): ToolConfig {
     let bodySchema: Record<string, unknown> | undefined;
     let bodyContentType: string | undefined;
     let bodyExample: string | undefined;
+    let description = endpoint.summary || endpoint.description || `${endpoint.method} ${endpoint.path}`;
 
     if (endpoint.requestBody?.schema) {
         const schema = endpoint.requestBody.schema as {
@@ -370,44 +372,51 @@ function createToolConfig(endpoint: ParsedEndpoint): ToolConfig {
 
         const requiredFields = schema.required || [];
 
-        if (schema.properties) {
+        const bodyKind = getBodyContentKind(
+            {
+                endpointId: endpoint.id,
+                enabled: true,
+                toolName: endpoint.operationId || endpoint.summary || endpoint.id,
+                description,
+                parameters: [],
+                bodySchema,
+                bodyContentType,
+            },
+            []
+        );
+        const exposeProperties =
+            (bodyKind === "flattenedObject" && isShallowSimpleObjectSchema(schema)) ||
+            (["formUrlencoded", "multipart"].includes(bodyKind || "") && Boolean(schema.properties));
+
+        if (schema.properties && exposeProperties) {
             for (const [propName, propSchema] of Object.entries(schema.properties)) {
                 bodyParams.push({
                     name: sanitizeIdentifier(propName, `body_${bodyParams.length + 1}`),
                     originalName: propName,
                     type: getTypeFromSchema(propSchema),
                     required: requiredFields.includes(propName),
-                    description: (propSchema.description as string) || "",
+                    description: [
+                        (propSchema.description as string) || "",
+                        bodyKind === "multipart" && isBinarySchema(propSchema) ? "Base64-encoded file content." : "",
+                    ].filter(Boolean).join(" "),
                     location: "body",
                     schema: propSchema,
                 });
             }
-        } else if (schema.type === "array") {
-            // Handle array body
+        } else if (bodyKind) {
             bodyParams.push({
                 name: "body",
                 originalName: "body",
                 type: getTypeFromSchema(schema),
-                required: true,
-                description: "Request body array",
+                required: endpoint.requestBody.required,
+                description: schema.type === "array" ? "Request body array" : "Request body",
                 location: "body",
                 schema: schema,
-            });
-        } else if (schema.type) {
-            bodyParams.push({
-                name: "body",
-                originalName: "body",
-                type: getTypeFromSchema(schema),
-                required: true,
-                description: "Request body",
-                location: "body",
-                schema,
             });
         }
     }
 
     // Build enhanced description with example if available
-    let description = endpoint.summary || endpoint.description || `${endpoint.method} ${endpoint.path}`;
     if (bodyExample && bodyParams.length > 0) {
         description = `${description}\n\nRequest body example:\n${bodyExample}`;
     }

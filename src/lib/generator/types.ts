@@ -13,9 +13,10 @@ export type AuthStrategy = "none" | "apiKeyHeader" | "apiKeyQuery" | "bearer" | 
 export type ToolAuthSource = "operation" | "global" | "none" | "unsupported";
 export type ToolManualReviewSeverity = "warning" | "error";
 export type RequestBodyContentKind =
-    | "json-object"
-    | "json-raw"
-    | "form-urlencoded"
+    | "flattenedObject"
+    | "rawJsonObject"
+    | "rawArray"
+    | "formUrlencoded"
     | "multipart"
     | "text"
     | "binary";
