@@ -19,4 +19,4 @@ export type {
     ApiSourceMetadata,
 } from "./types";
 export { buildOpenAPIModel } from "./openapi";
-export { buildPostmanApiModel, type PostmanCollection } from "./postman";
+export { buildPostmanApiModel, type PostmanBuildOptions, type PostmanCollection } from "./postman";

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { buildOpenAPIModel } from "../api-model/openapi.ts";
+import { buildPostmanApiModel } from "../api-model/postman.ts";
 import { apiModelToParsedSpec } from "../api-model/legacy.ts";
 import { parseGeneratorRequestPayload } from "./request.ts";
 import { createPreviewResponse } from "./index.ts";
@@ -326,6 +327,180 @@ test("openapi model converts Swagger 2 security definitions, consumes, produces,
         model.operations[0].responses[0].content?.map((content) => content.mediaType),
         ["application/json", "text/csv"]
     );
+});
+
+test("postman model resolves variables, inheritance, disabled items, query sources, auth headers, and body modes", () => {
+    const model = buildPostmanApiModel({
+        info: {
+            name: "Postman Advanced",
+            schema: "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+        },
+        variable: [
+            { key: "baseUrl", value: "https://collection.example.com" },
+            { key: "version", value: "v1" },
+            { key: "tenant", value: "collection-tenant" },
+            { key: "traceId", value: "collection-trace" },
+        ],
+        auth: {
+            type: "apikey",
+            apikey: [
+                { key: "in", value: "header" },
+                { key: "key", value: "X-API-Key" },
+                { key: "value", value: "{{apiKey}}" },
+            ],
+        },
+        item: [
+            {
+                name: "Disabled Folder",
+                disabled: true,
+                item: [{
+                    name: "Hidden",
+                    request: { method: "GET", url: "{{baseUrl}}/hidden" },
+                }],
+            },
+            {
+                name: "Users",
+                auth: { type: "bearer", bearer: [{ key: "token", value: "{{token}}" }] },
+                item: [
+                    {
+                        name: "List Users",
+                        request: {
+                            method: "GET",
+                            url: {
+                                raw: "{{baseUrl}}/{{version}}/users?raw=true&tenant={{tenant}}",
+                                path: ["{{version}}", "{{resource}}"],
+                                query: [
+                                    { key: "structured", value: "yes" },
+                                    { key: "tenant", value: "{{tenant}}" },
+                                    { key: "skip", value: "no", disabled: true },
+                                ],
+                                variable: [{ key: "resource", value: "users" }],
+                            },
+                            header: [
+                                { key: "Authorization", value: "Bearer {{token}}" },
+                                { key: "X-Trace", value: "{{traceId}}" },
+                            ],
+                        },
+                    },
+                    {
+                        name: "Disabled Request",
+                        disabled: true,
+                        request: { method: "GET", url: "{{baseUrl}}/disabled" },
+                    },
+                    {
+                        name: "Create User",
+                        request: {
+                            method: "POST",
+                            url: "{{baseUrl}}/{{version}}/users",
+                            auth: { type: "noauth" },
+                            body: {
+                                mode: "raw",
+                                raw: "{\"name\":\"Ada\",\"active\":true}",
+                                options: { raw: { language: "json" } },
+                            },
+                        },
+                    },
+                ],
+            },
+            {
+                name: "Update Text",
+                request: {
+                    method: "PATCH",
+                    url: "{{baseUrl}}/{{version}}/text",
+                    body: { mode: "raw", raw: "hello", options: { raw: { language: "text" } } },
+                },
+            },
+            {
+                name: "Upload",
+                request: {
+                    method: "POST",
+                    url: "{{baseUrl}}/{{version}}/upload",
+                    body: {
+                        mode: "formdata",
+                        formdata: [
+                            { key: "file", type: "file" },
+                            { key: "title", value: "Report" },
+                            { key: "ignore", value: "x", disabled: true },
+                        ],
+                    },
+                },
+            },
+            {
+                name: "Login",
+                request: {
+                    method: "POST",
+                    url: "{{baseUrl}}/{{version}}/login",
+                    body: {
+                        mode: "urlencoded",
+                        urlencoded: [{ key: "username", value: "ada" }],
+                    },
+                },
+            },
+            {
+                name: "Binary",
+                request: {
+                    method: "POST",
+                    url: "{{baseUrl}}/{{version}}/binary",
+                    body: { mode: "file", file: { src: "/tmp/file.bin" } },
+                },
+            },
+            {
+                name: "GraphQL",
+                request: {
+                    method: "POST",
+                    url: "{{baseUrl}}/{{version}}/graphql",
+                    body: {
+                        mode: "graphql",
+                        graphql: { query: "query User($id: ID!) { user(id: $id) { id } }", variables: "{\"id\":\"u1\"}" },
+                    },
+                },
+            },
+        ],
+    }, {}, {
+        globals: {
+            values: [
+                { key: "baseUrl", value: "https://global.example.com" },
+                { key: "tenant", value: "global-tenant" },
+                { key: "traceId", value: "global-trace" },
+            ],
+        },
+        environment: {
+            values: [
+                { key: "baseUrl", value: "https://env.example.com" },
+                { key: "tenant", value: "env-tenant" },
+                { key: "token", value: "secret" },
+                { key: "traceId", value: "env-trace" },
+            ],
+        },
+        variables: { traceId: "explicit-trace" },
+    });
+
+    assert.equal(model.baseUrls[0], "https://env.example.com");
+    assert.equal(model.operations.length, 7);
+    assert.equal(model.operations.some((operation) => operation.summary === "Hidden"), false);
+    assert.equal(model.operations.some((operation) => operation.summary === "Disabled Request"), false);
+
+    const listUsers = model.operations.find((operation) => operation.summary === "List Users");
+    assert.ok(listUsers);
+    assert.equal(listUsers.path, "/v1/users");
+    assert.deepEqual(listUsers.security, [{ bearer: [] }]);
+    assert.equal(listUsers.parameters.some((parameter) => parameter.in === "header" && parameter.name === "Authorization"), false);
+    assert.equal(listUsers.parameters.find((parameter) => parameter.name === "X-Trace")?.schema?.example, "explicit-trace");
+    assert.deepEqual(
+        listUsers.parameters.filter((parameter) => parameter.in === "query").map((parameter) => [parameter.name, parameter.schema?.example]),
+        [["raw", "true"], ["tenant", "env-tenant"], ["structured", "yes"]]
+    );
+
+    const createUser = model.operations.find((operation) => operation.summary === "Create User");
+    assert.deepEqual(createUser?.security, []);
+    assert.equal(createUser?.requestBody?.content[0].mediaType, "application/json");
+    assert.deepEqual(createUser?.requestBody?.content[0].example, { name: "Ada", active: true });
+
+    assert.equal(model.operations.find((operation) => operation.summary === "Update Text")?.requestBody?.content[0].mediaType, "text/plain");
+    assert.equal(model.operations.find((operation) => operation.summary === "Upload")?.requestBody?.content[0].mediaType, "multipart/form-data");
+    assert.equal(model.operations.find((operation) => operation.summary === "Login")?.requestBody?.content[0].mediaType, "application/x-www-form-urlencoded");
+    assert.equal(model.operations.find((operation) => operation.summary === "Binary")?.requestBody?.content[0].mediaType, "application/octet-stream");
+    assert.equal(model.operations.find((operation) => operation.summary === "GraphQL")?.requestBody?.content[0].mediaType, "application/json");
 });
 
 test("schema generation supports OpenAPI composition keywords", () => {
