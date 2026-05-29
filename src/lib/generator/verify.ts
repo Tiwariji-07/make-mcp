@@ -8,11 +8,13 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { spawnSync } from "node:child_process";
+import { spawnSync, type SpawnSyncReturns } from "node:child_process";
 import { createRequire } from "node:module";
-import type { GeneratedProject, VerificationCheck, VerificationReport } from "./types.ts";
+import type { GeneratedProject, VerificationCheck, VerificationMode, VerificationReport } from "./types.ts";
 
 const require = createRequire(import.meta.url);
+const COMMAND_TIMEOUT_MS = Number(process.env.MAKEMCP_FULL_VERIFY_TIMEOUT_MS || 120_000);
+const MAX_COMMAND_OUTPUT_LENGTH = 6000;
 
 function resolveTypeScriptCompilerPath(): string {
     const cwdPath = join(process.cwd(), "node_modules", "typescript", "lib", "tsc.js");
@@ -33,6 +35,85 @@ function writeProjectToTempDir(project: GeneratedProject): string {
     }
 
     return tempDir;
+}
+
+function truncateOutput(output: string): string {
+    const trimmed = output.trim();
+    if (trimmed.length <= MAX_COMMAND_OUTPUT_LENGTH) {
+        return trimmed;
+    }
+
+    return `${trimmed.slice(0, MAX_COMMAND_OUTPUT_LENGTH)}\n... output truncated ...`;
+}
+
+function formatCommandFailure(result: SpawnSyncReturns<string>, fallback: string): string {
+    if (result.error) {
+        return result.error.message;
+    }
+
+    return truncateOutput([result.stderr, result.stdout].filter(Boolean).join("\n")) || fallback;
+}
+
+function runVerificationCommand(
+    name: string,
+    command: string,
+    args: string[],
+    cwd: string,
+    fallback: string,
+    env?: Partial<NodeJS.ProcessEnv>
+): VerificationCheck {
+    const result = spawnSync(command, args, {
+        cwd,
+        encoding: "utf8",
+        env: env ? { ...process.env, ...env } : process.env,
+        timeout: COMMAND_TIMEOUT_MS,
+    });
+
+    if (result.error) {
+        return {
+            name,
+            status: "failed",
+            details: formatCommandFailure(result, fallback),
+        };
+    }
+
+    if (result.status !== 0) {
+        return {
+            name,
+            status: "failed",
+            details: formatCommandFailure(result, fallback),
+        };
+    }
+
+    return { name, status: "passed" };
+}
+
+function findPythonBinary(): string {
+    for (const candidate of ["python3", "python", "/usr/bin/python3"]) {
+        const result = spawnSync(candidate, [
+            "-c",
+            "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)",
+        ], {
+            encoding: "utf8",
+            timeout: 5000,
+        });
+
+        if (!result.error && result.status === 0) {
+            return candidate;
+        }
+    }
+
+    return "python3";
+}
+
+function getVenvPythonPath(tempDir: string): string {
+    return process.platform === "win32"
+        ? join(tempDir, ".venv", "Scripts", "python.exe")
+        : join(tempDir, ".venv", "bin", "python");
+}
+
+function hasGeneratedTests(project: GeneratedProject): boolean {
+    return Array.from(project.files.keys()).some((filePath) => filePath.startsWith("tests/"));
 }
 
 function verifyNoTemplateArtifacts(project: GeneratedProject): VerificationCheck {
@@ -226,6 +307,92 @@ function verifyNodeProject(project: GeneratedProject): VerificationCheck {
     }
 }
 
+function verifyNodeProjectFull(project: GeneratedProject): VerificationCheck[] {
+    const tempDir = writeProjectToTempDir(project);
+    const checks: VerificationCheck[] = [];
+
+    try {
+        let packageJson: { scripts?: Record<string, string> };
+
+        try {
+            packageJson = JSON.parse(readFileSync(join(tempDir, "package.json"), "utf8")) as {
+                scripts?: Record<string, string>;
+            };
+        } catch (error) {
+            return [{
+                name: "node-package-json",
+                status: "failed",
+                details: error instanceof Error ? error.message : "Generated package.json could not be read",
+            }];
+        }
+
+        if (!packageJson.scripts?.build) {
+            return [{
+                name: "node-package-json",
+                status: "failed",
+                details: "Generated package.json is missing a build script",
+            }];
+        }
+
+        checks.push(runVerificationCommand(
+            "node-npm-install",
+            "npm",
+            ["install"],
+            tempDir,
+            "npm install failed for generated project",
+            { npm_config_audit: "false", npm_config_fund: "false" }
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        checks.push(runVerificationCommand(
+            "node-build",
+            "npm",
+            ["run", "build"],
+            tempDir,
+            "npm run build failed for generated project"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        checks.push(runVerificationCommand(
+            "node-import",
+            process.execPath,
+            ["-e", "import('./dist/src/mcp/server.js')"],
+            tempDir,
+            "Generated Node server module failed to import"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        if (hasGeneratedTests(project) && packageJson.scripts?.test) {
+            checks.push(runVerificationCommand(
+                "node-tests",
+                "npm",
+                ["test"],
+                tempDir,
+                "Generated Node tests failed"
+            ));
+        } else {
+            checks.push({
+                name: "node-tests",
+                status: "skipped",
+                details: "Generated project does not include a test script",
+            });
+        }
+
+        return checks;
+    } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+    }
+}
+
 function createPythonImportStubs(tempDir: string) {
     const srcDir = join(tempDir, "src");
 
@@ -280,7 +447,7 @@ function verifyPythonProject(project: GeneratedProject): VerificationCheck {
             };
         }
 
-        const pythonBinary = existsSync("/usr/bin/python3") ? "/usr/bin/python3" : "python3";
+        const pythonBinary = findPythonBinary();
         const result = spawnSync(pythonBinary, [
             "-c",
             [
@@ -346,19 +513,113 @@ function verifyPythonProject(project: GeneratedProject): VerificationCheck {
     }
 }
 
-export function verifyGeneratedProject(project: GeneratedProject): VerificationReport {
+function verifyPythonProjectFull(project: GeneratedProject): VerificationCheck[] {
+    const tempDir = writeProjectToTempDir(project);
+    const checks: VerificationCheck[] = [];
+    const pythonBinary = findPythonBinary();
+    const venvPython = getVenvPythonPath(tempDir);
+    const testsEnabled = hasGeneratedTests(project);
+
+    try {
+        const pyproject = project.files.get("pyproject.toml") || "";
+        if (!/["']fastmcp==\d+\.\d+\.\d+["']/.test(pyproject)) {
+            return [{
+                name: "python-pyproject",
+                status: "failed",
+                details: "Generated pyproject.toml must pin fastmcp to an exact version",
+            }];
+        }
+
+        checks.push(runVerificationCommand(
+            "python-venv",
+            pythonBinary,
+            ["-m", "venv", ".venv"],
+            tempDir,
+            "Python virtual environment creation failed"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        checks.push(runVerificationCommand(
+            "python-install",
+            venvPython,
+            ["-m", "pip", "install", testsEnabled ? ".[test]" : "."],
+            tempDir,
+            "pip install failed for generated project"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        checks.push(runVerificationCommand(
+            "python-compile",
+            venvPython,
+            ["-m", "compileall", "-q", "src"],
+            tempDir,
+            "Generated Python sources failed to compile"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        checks.push(runVerificationCommand(
+            "python-import",
+            venvPython,
+            ["-c", "import server"],
+            tempDir,
+            "Generated Python server module failed to import"
+        ));
+
+        if (checks.at(-1)?.status !== "passed") {
+            return checks;
+        }
+
+        if (testsEnabled) {
+            checks.push(runVerificationCommand(
+                "python-tests",
+                venvPython,
+                ["-m", "pytest"],
+                tempDir,
+                "Generated Python tests failed"
+            ));
+        } else {
+            checks.push({
+                name: "python-tests",
+                status: "skipped",
+                details: "Generated project does not include tests",
+            });
+        }
+
+        return checks;
+    } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+    }
+}
+
+export function verifyGeneratedProject(project: GeneratedProject, mode: VerificationMode = "fast"): VerificationReport {
     const checks: VerificationCheck[] = [];
     checks.push(verifyNoTemplateArtifacts(project));
     checks.push(verifyProjectShape(project));
 
     if (project.manifest.language === "node") {
-        checks.push(verifyNodeProject(project));
+        if (mode === "full") {
+            checks.push(...verifyNodeProjectFull(project));
+        } else {
+            checks.push(verifyNodeProject(project));
+        }
+    } else if (mode === "full") {
+        checks.push(...verifyPythonProjectFull(project));
     } else {
         checks.push(verifyPythonProject(project));
     }
 
     return {
         status: checks.some((check) => check.status === "failed") ? "failed" : "passed",
+        mode,
         checks,
     };
 }

@@ -8,6 +8,7 @@ export type TransportStrategy = "stdio" | "sse" | "streamableHttp";
 export type ExportLanguage = "node" | "python";
 export type ExportFramework = "mcp-ts-sdk" | "fastmcp";
 export type PackageManager = "npm" | "pnpm" | "yarn";
+export type VerificationMode = "fast" | "full";
 export type ParamLocation = "path" | "query" | "header" | "cookie" | "body";
 export type AuthStrategy = "none" | "apiKeyHeader" | "apiKeyQuery" | "apiKeyCookie" | "bearer" | "basic";
 export type ToolAuthSource = "operation" | "global" | "none" | "unsupported";
@@ -78,6 +79,7 @@ export interface GeneratorExportConfig {
     language: ExportLanguage;
     framework: ExportFramework;
     packageManager: PackageManager;
+    verificationMode?: VerificationMode;
     features?: Partial<GenerationFeatureFlags>;
 }
 
@@ -101,6 +103,7 @@ export interface GenerationPlan {
     };
     auth: NormalizedAuth;
     features: GenerationFeatureFlags;
+    verificationMode: VerificationMode;
     tools: GenerationTool[];
     warnings: string[];
 }
@@ -262,6 +265,7 @@ export interface VerificationCheck {
 
 export interface VerificationReport {
     status: "passed" | "failed";
+    mode: VerificationMode;
     checks: VerificationCheck[];
 }
 

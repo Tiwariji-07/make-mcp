@@ -389,6 +389,7 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
         },
         auth,
         features: getDefaultFeatures(request.exportConfig),
+        verificationMode: request.exportConfig.verificationMode || "fast",
         tools,
         warnings,
     };

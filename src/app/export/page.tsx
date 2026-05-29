@@ -49,6 +49,7 @@ interface PreviewData {
   };
   verification?: {
     status: "passed" | "failed";
+    mode: "fast" | "full";
     checks: PreviewCheck[];
   };
 }
@@ -342,6 +343,23 @@ export default function ExportPage() {
                     checked={exportFeatures.verification}
                     onCheckedChange={(checked) => setExportConfig({ features: { verification: checked } })}
                   />
+                  {exportFeatures.verification && (
+                    <div className="space-y-1.5 pl-10">
+                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Verification Mode</Label>
+                      <Select
+                        value={exportConfig.verificationMode || "fast"}
+                        onValueChange={(value) => setExportConfig({ verificationMode: value as "fast" | "full" })}
+                      >
+                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="fast">Fast checks</SelectItem>
+                          <SelectItem value="full">Full install and build</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
                 </div>
               </Section>
 
@@ -464,7 +482,7 @@ export default function ExportPage() {
                       {previewData.verification && (
                         <div className="space-y-2">
                           <div className={previewData.verification.status === "passed" ? "text-primary" : "text-red"}>
-                            Verification: {previewData.verification.status}
+                            Verification ({previewData.verification.mode}): {previewData.verification.status}
                           </div>
                           <div className="space-y-1">
                             {previewData.verification.checks.map((check) => (

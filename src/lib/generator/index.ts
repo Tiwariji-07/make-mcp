@@ -35,7 +35,7 @@ function prepareGeneratedProject(request: GeneratorRequest): {
 
     const project = generateProject(plan);
     const verification = plan.features.verification
-        ? verifyGeneratedProject(project)
+        ? verifyGeneratedProject(project, plan.verificationMode)
         : undefined;
 
     return { project, validation, verification };

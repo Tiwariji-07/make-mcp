@@ -632,10 +632,18 @@ dependencies = [
     "httpx>=0.25.0",
     "python-dotenv>=1.0.0",
 ]
+${plan.features.tests ? `
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+` : ""}
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+only-include = ["src"]
+sources = ["src"]
 `);
 
     files.set(".env.example", getEnvExample(plan));

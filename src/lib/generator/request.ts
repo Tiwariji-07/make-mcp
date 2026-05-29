@@ -42,6 +42,7 @@ const exportSchema = z.object({
     language: z.enum(["node", "python"]),
     framework: z.enum(["mcp-ts-sdk", "fastmcp"]),
     packageManager: z.enum(["npm", "pnpm", "yarn"]),
+    verificationMode: z.enum(["fast", "full"]).optional().default("fast"),
     features: z.object({
         documentation: z.boolean().optional(),
         docker: z.boolean().optional(),

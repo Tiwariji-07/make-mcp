@@ -88,6 +88,7 @@ export interface ExportConfig {
     language: "node" | "python";
     framework: "mcp-ts-sdk" | "fastmcp";
     packageManager: "npm" | "pnpm" | "yarn";
+    verificationMode: "fast" | "full";
     features: {
         documentation: boolean;
         docker: boolean;
@@ -452,6 +453,7 @@ const initialState = {
         language: "node" as const,
         framework: "mcp-ts-sdk" as const,
         packageManager: "npm" as const,
+        verificationMode: "fast" as const,
         features: {
             documentation: true,
             docker: false,
