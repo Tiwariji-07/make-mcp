@@ -262,6 +262,7 @@ function verifyNodeProject(project: GeneratedProject): VerificationCheck {
     try {
         const packageJson = JSON.parse(readFileSync(join(tempDir, "package.json"), "utf8")) as {
             scripts?: Record<string, string>;
+            dependencies?: Record<string, string>;
         };
 
         if (!packageJson.scripts?.build) {
@@ -269,6 +270,14 @@ function verifyNodeProject(project: GeneratedProject): VerificationCheck {
                 name: "node-generated-project",
                 status: "failed",
                 details: "Generated package.json is missing a build script",
+            };
+        }
+
+        if (!/^\d+\.\d+\.\d+$/.test(packageJson.dependencies?.["@modelcontextprotocol/sdk"] || "")) {
+            return {
+                name: "node-generated-project",
+                status: "failed",
+                details: "Generated package.json must pin @modelcontextprotocol/sdk to an exact version",
             };
         }
 
@@ -312,11 +321,12 @@ function verifyNodeProjectFull(project: GeneratedProject): VerificationCheck[] {
     const checks: VerificationCheck[] = [];
 
     try {
-        let packageJson: { scripts?: Record<string, string> };
+        let packageJson: { scripts?: Record<string, string>; dependencies?: Record<string, string> };
 
         try {
             packageJson = JSON.parse(readFileSync(join(tempDir, "package.json"), "utf8")) as {
                 scripts?: Record<string, string>;
+                dependencies?: Record<string, string>;
             };
         } catch (error) {
             return [{
@@ -331,6 +341,14 @@ function verifyNodeProjectFull(project: GeneratedProject): VerificationCheck[] {
                 name: "node-package-json",
                 status: "failed",
                 details: "Generated package.json is missing a build script",
+            }];
+        }
+
+        if (!/^\d+\.\d+\.\d+$/.test(packageJson.dependencies?.["@modelcontextprotocol/sdk"] || "")) {
+            return [{
+                name: "node-package-json",
+                status: "failed",
+                details: "Generated package.json must pin @modelcontextprotocol/sdk to an exact version",
             }];
         }
 

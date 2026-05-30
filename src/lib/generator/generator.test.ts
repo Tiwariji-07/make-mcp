@@ -288,6 +288,8 @@ test("openapi -> node preview matches golden contract", () => {
     const operationsFile = getFileContent(preview, "src/api/operations.ts");
     const indexFile = getFileContent(preview, "src/index.ts");
     const readmeFile = getFileContent(preview, "README.md");
+    const packageFile = getFileContent(preview, "package.json");
+    assert.match(packageFile, /"@modelcontextprotocol\/sdk": "1\.29\.0"/);
     assert.match(serverFile, /server\.tool\(\s*"create-customer"/);
     assert.match(configFile, /"apiKey:apiKeyHeader:header:x-api-key": \{ type: "apiKey", in: "header", name: "x-api-key", value: process\.env\.API_KEY \|\| "" \}/);
     assert.match(clientFile, /headers\[scheme\.name\] = scheme\.value/);
@@ -304,6 +306,7 @@ test("openapi -> node preview matches golden contract", () => {
     assert.match(readmeFile, /## Tools[\s\S]*`create-customer`: Create a customer/);
     assert.match(readmeFile, /## Auth Notes[\s\S]*`apiKey`: sends `x-api-key` via header from `API_KEY`/);
     assert.match(readmeFile, /## Known Warnings[\s\S]*- None\./);
+    assert.match(readmeFile, /## Tested Runtime Versions[\s\S]*`@modelcontextprotocol\/sdk`[\s\S]*`1\.29\.0`/);
     assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"url": "http:\/\/localhost:8080"/);
     assert.doesNotMatch(readmeFile, /## Example MCP Client Config[\s\S]*"env"/);
   });
@@ -352,6 +355,7 @@ test("openapi -> python preview matches golden contract", () => {
     assert.match(readmeFile, /## Tools[\s\S]*`create-customer`: Create a customer/);
     assert.match(readmeFile, /## Auth Notes[\s\S]*`apiKey`: sends `x-api-key` via header from `API_KEY`/);
     assert.match(readmeFile, /## Known Warnings[\s\S]*- None\./);
+    assert.match(readmeFile, /## Tested Runtime Versions[\s\S]*`fastmcp`[\s\S]*`3\.3\.1`/);
     assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"url": "http:\/\/localhost:8080"/);
     assert.doesNotMatch(readmeFile, /## Example MCP Client Config[\s\S]*"env"/);
 });

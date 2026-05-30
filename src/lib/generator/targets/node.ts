@@ -9,6 +9,7 @@ import type {
 import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getNodeTransportStrategy } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
+import { NODE_MCP_SDK_VERSION } from "../runtime-versions.ts";
 import { toJsStringLiteral } from "../utils.ts";
 import { toZodType } from "../schema.ts";
 
@@ -569,6 +570,9 @@ function renderReadme(plan: GenerationPlan): string {
         buildCommands: [build, start],
         stdioClientCommand: "node",
         stdioClientArgs: ["dist/src/index.js"],
+        runtimeDependencies: [
+            { name: "@modelcontextprotocol/sdk", version: NODE_MCP_SDK_VERSION },
+        ],
     });
 }
 
@@ -960,7 +964,7 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
             test: "tsx --test tests/**/*.test.ts",
         },
         dependencies: {
-            "@modelcontextprotocol/sdk": "^1.0.0",
+            "@modelcontextprotocol/sdk": NODE_MCP_SDK_VERSION,
             dotenv: "^16.4.7",
             zod: "^3.22.0",
         },

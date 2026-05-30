@@ -7,6 +7,10 @@ export interface ReadmeRuntimeDetails {
     buildCommands?: string[];
     stdioClientCommand: string;
     stdioClientArgs: string[];
+    runtimeDependencies?: Array<{
+        name: string;
+        version: string;
+    }>;
 }
 
 function getTransportName(plan: GenerationPlan): string {
@@ -128,6 +132,22 @@ function getClientConfigNote(plan: GenerationPlan): string {
     return "Client configuration formats vary by MCP client. Use this as a starting point, and configure `.env` on the server process where this MCP server runs:";
 }
 
+function renderRuntimeDependencies(runtime: ReadmeRuntimeDetails): string {
+    if (!runtime.runtimeDependencies?.length) return "";
+
+    const rows = runtime.runtimeDependencies
+        .map((dependency) => `| \`${dependency.name}\` | \`${dependency.version}\` | Exact version emitted by this generator. |`)
+        .join("\n");
+
+    return `## Tested Runtime Versions
+
+| Package | Tested version | Notes |
+| --- | --- | --- |
+${rows}
+
+`;
+}
+
 export function renderGeneratedReadme(plan: GenerationPlan, runtime: ReadmeRuntimeDetails): string {
     const transportName = getTransportName(plan);
     const transportUrl = getTransportUrl(plan);
@@ -182,7 +202,7 @@ This server is configured for ${transportName}.
 - \`http\`: Streamable HTTP, recommended for remote or server deployments.
 - \`sse\`: legacy option for older clients.
 
-${buildSection}## Tools
+${buildSection}${renderRuntimeDependencies(runtime)}## Tools
 
 ${plan.tools.map((tool) => `- \`${tool.displayName}\`: ${tool.description}`).join("\n")}
 

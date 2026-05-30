@@ -9,10 +9,9 @@ import type {
 import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getPythonTransportRunLine } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
+import { FASTMCP_VERSION } from "../runtime-versions.ts";
 import { toPythonStringLiteral } from "../utils.ts";
 import { toPythonType } from "../schema.ts";
-
-const FASTMCP_VERSION = "3.3.1";
 
 function renderPythonSerializationOptions(param: GenerationTool["params"][number]): string {
     const style = param.style === undefined ? "None" : JSON.stringify(param.style);
@@ -542,6 +541,9 @@ function renderReadme(plan: GenerationPlan): string {
         runCommand: "python src/server.py",
         stdioClientCommand: "python",
         stdioClientArgs: ["src/server.py"],
+        runtimeDependencies: [
+            { name: "fastmcp", version: FASTMCP_VERSION },
+        ],
     });
 }
 

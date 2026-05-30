@@ -33,6 +33,9 @@ function makeNodeProject(): GeneratedProject {
                     build: "node -e \"const fs=require('node:fs'); fs.mkdirSync('dist/src/mcp', { recursive: true }); fs.writeFileSync('dist/src/mcp/server.js', 'export {};');\"",
                     test: "node tests/manifest.test.js",
                 },
+                dependencies: {
+                    "@modelcontextprotocol/sdk": "1.29.0",
+                },
             }, null, 2)],
             ["tsconfig.json", JSON.stringify({ compilerOptions: {}, include: ["src/**/*"] }, null, 2)],
             ["src/index.ts", ""],
