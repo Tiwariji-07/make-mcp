@@ -287,6 +287,7 @@ test("openapi -> node preview matches golden contract", () => {
     const configFile = getFileContent(preview, "src/config.ts");
     const operationsFile = getFileContent(preview, "src/api/operations.ts");
     const indexFile = getFileContent(preview, "src/index.ts");
+    const readmeFile = getFileContent(preview, "README.md");
     assert.match(serverFile, /server\.tool\(\s*"create-customer"/);
     assert.match(configFile, /"apiKey:apiKeyHeader:header:x-api-key": \{ type: "apiKey", in: "header", name: "x-api-key", value: process\.env\.API_KEY \|\| "" \}/);
     assert.match(clientFile, /headers\[scheme\.name\] = scheme\.value/);
@@ -296,6 +297,15 @@ test("openapi -> node preview matches golden contract", () => {
     assert.match(indexFile, /if \(req\.method !== "POST"\)/);
     assert.match(indexFile, /const server = createServer\(\);\n    const transport = new StreamableHTTPServerTransport\(\{ sessionIdGenerator: undefined \}\);/);
     assert.match(indexFile, /message: "Method not allowed\."/);
+    assert.match(readmeFile, /## Install[\s\S]*npm install/);
+    assert.match(readmeFile, /## Configure[\s\S]*cp \.env\.example \.env/);
+    assert.match(readmeFile, /## Environment Variables[\s\S]*`API_BASE_URL`[\s\S]*`API_KEY`/);
+    assert.match(readmeFile, /## Run With Selected Transport[\s\S]*http:\/\/localhost:8080[\s\S]*npm run dev/);
+    assert.match(readmeFile, /## Tools[\s\S]*`create-customer`: Create a customer/);
+    assert.match(readmeFile, /## Auth Notes[\s\S]*`apiKey`: sends `x-api-key` via header from `API_KEY`/);
+    assert.match(readmeFile, /## Known Warnings[\s\S]*- None\./);
+    assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"url": "http:\/\/localhost:8080"/);
+    assert.doesNotMatch(readmeFile, /## Example MCP Client Config[\s\S]*"env"/);
   });
 
 test("openapi -> python preview matches golden contract", () => {
@@ -327,6 +337,7 @@ test("openapi -> python preview matches golden contract", () => {
     const apiClientFile = getFileContent(preview, "src/api_client.py");
     const configFile = getFileContent(preview, "src/config.py");
     const operationsFile = getFileContent(preview, "src/operations.py");
+    const readmeFile = getFileContent(preview, "README.md");
     assert.match(pyprojectFile, /"fastmcp==3\.3\.1"/);
     assert.match(serverFile, /@mcp\.tool\(name="create-customer"\)/);
     assert.match(configFile, /"apiKey:apiKeyHeader:header:x-api-key": \{"type": "apiKey", "in": "header", "name": "x-api-key", "value": os\.getenv\("API_KEY", ""\)\}/);
@@ -334,6 +345,15 @@ test("openapi -> python preview matches golden contract", () => {
     assert.match(apiClientFile, /has_header\(headers, name\)/);
     assert.match(operationsFile, /AUTH_SCHEMES\["apiKey:apiKeyHeader:header:x-api-key"\]/);
     assert.match(operationsFile, /json_body\["accountId"\] = account_id/);
+    assert.match(readmeFile, /## Install[\s\S]*pip install -e \./);
+    assert.match(readmeFile, /## Configure[\s\S]*cp \.env\.example \.env/);
+    assert.match(readmeFile, /## Environment Variables[\s\S]*`API_BASE_URL`[\s\S]*`API_KEY`/);
+    assert.match(readmeFile, /## Run With Selected Transport[\s\S]*http:\/\/localhost:8080[\s\S]*python src\/server\.py/);
+    assert.match(readmeFile, /## Tools[\s\S]*`create-customer`: Create a customer/);
+    assert.match(readmeFile, /## Auth Notes[\s\S]*`apiKey`: sends `x-api-key` via header from `API_KEY`/);
+    assert.match(readmeFile, /## Known Warnings[\s\S]*- None\./);
+    assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"url": "http:\/\/localhost:8080"/);
+    assert.doesNotMatch(readmeFile, /## Example MCP Client Config[\s\S]*"env"/);
 });
 
 test("node preview keeps complex json bodies as a single body argument", () => {
@@ -428,11 +448,15 @@ test("postman -> node preview preserves path and headers", () => {
     const clientFile = getFileContent(preview, "src/api/client.ts");
     const configFile = getFileContent(preview, "src/config.ts");
     const operationsFile = getFileContent(preview, "src/api/operations.ts");
+    const readmeFile = getFileContent(preview, "README.md");
     assert.match(configFile, /"bearer:bearer::": \{ type: "bearer", token: process\.env\.BEARER_TOKEN \|\| "" \}/);
     assert.match(clientFile, /headers\["Authorization"\] = `Bearer \$\{scheme\.token\}`/);
     assert.match(operationsFile, /AUTH_SCHEMES\["bearer:bearer::"\]/);
     assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
     assert.match(operationsFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
+    assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"command": "node"/);
+    assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"API_BASE_URL": "https:\/\/postman\.example\.com"/);
+    assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"BEARER_TOKEN": "your_token_here"/);
 });
 
 test("postman -> python preview preserves tool name and stdio transport", () => {
