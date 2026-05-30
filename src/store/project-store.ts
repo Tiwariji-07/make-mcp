@@ -70,7 +70,7 @@ export interface AuthConfig {
     type: "apiKey" | "bearer" | "basic" | "none";
     apiKey?: {
         name: string;
-        in: "header" | "query";
+        in: "header" | "query" | "cookie";
     };
 }
 
@@ -193,7 +193,7 @@ function inferAuthConfig(securitySchemes: ParsedSpec["securitySchemes"]): AuthCo
                 type: "apiKey",
                 apiKey: {
                     name: candidate.name || "X-API-Key",
-                    in: candidate.in === "query" ? "query" : "header",
+                    in: candidate.in === "query" || candidate.in === "cookie" ? candidate.in : "header",
                 },
             };
         }

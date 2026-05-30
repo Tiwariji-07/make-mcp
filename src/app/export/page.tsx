@@ -11,6 +11,12 @@ import {
   Eye,
   ArrowLeft,
   Layers3,
+  AlertTriangle,
+  CheckCircle2,
+  Cpu,
+  FileText,
+  ShieldCheck,
+  XCircle,
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
@@ -28,6 +34,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/ui/copy-button";
 import { AuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
+import { buildToolPlans } from "@/lib/generator/planner";
 
 interface PreviewFile {
   name: string;
@@ -44,14 +51,35 @@ interface PreviewData {
   files: PreviewFile[];
   manifest?: {
     generatorVersion: string;
+    language?: string;
+    framework?: string;
+    transport?: string;
     toolCount: number;
     features: Record<string, boolean>;
+  };
+  validation?: {
+    errors: PreviewIssue[];
+    warnings: PreviewIssue[];
+    info: PreviewIssue[];
   };
   verification?: {
     status: "passed" | "failed";
     mode: "fast" | "full";
     checks: PreviewCheck[];
   };
+}
+
+interface PreviewIssue {
+  severity: "error" | "warning" | "info";
+  message: string;
+  path?: string;
+}
+
+interface EndpointReviewItem {
+  id: string;
+  label: string;
+  toolName: string;
+  reasons: string[];
 }
 
 type AuthType = AuthConfig["type"];
@@ -71,7 +99,7 @@ function getDetectedAuthOptions(spec: ParsedSpec): AuthConfig[] {
     if (c.type === "apiKey") {
       options.push({
         type: "apiKey",
-        apiKey: { name: c.name || "X-API-Key", in: c.in === "query" ? "query" : "header" },
+        apiKey: { name: c.name || "X-API-Key", in: c.in === "query" || c.in === "cookie" ? c.in : "header" },
       });
     } else if (c.type === "http" && c.scheme === "bearer") {
       options.push({ type: "bearer" });
@@ -92,6 +120,79 @@ function getTransportLabel(transport: Transport): string {
     http: "Streamable HTTP",
     sse: "SSE",
   }[transport];
+}
+
+function getRuntimeLabel(config: {
+  language: "node" | "python";
+  framework: "mcp-ts-sdk" | "fastmcp";
+  packageManager: "npm" | "pnpm" | "yarn";
+}): string {
+  if (config.language === "node") {
+    return `Node.js / TypeScript · ${config.framework} · ${config.packageManager}`;
+  }
+
+  return `Python · ${config.framework}`;
+}
+
+function getEndpointLabel(spec: ParsedSpec, endpointId: string): string {
+  const endpoint = spec.endpoints.find((candidate) => candidate.id === endpointId);
+  if (endpoint) return `${endpoint.method} ${endpoint.path}`;
+
+  const operation = spec.apiModel?.operations.find((candidate) => candidate.id === endpointId);
+  if (operation) return `${operation.method} ${operation.path}`;
+
+  return endpointId;
+}
+
+function getManualReviewEndpoints(spec: ParsedSpec, selectedTools: { id: string; toolName: string }[]): EndpointReviewItem[] {
+  const selectedIds = new Set(selectedTools.map((tool) => tool.id));
+  const toolNames = new Map(selectedTools.map((tool) => [tool.id, tool.toolName]));
+
+  if (spec.apiModel) {
+    return buildToolPlans(spec.apiModel)
+      .filter((plan) => selectedIds.has(plan.id))
+      .map((plan) => ({
+        id: plan.id,
+        label: `${plan.method} ${plan.path}`,
+        toolName: toolNames.get(plan.id) || plan.toolName,
+        reasons: [
+          ...plan.manualReview.map((flag) => flag.message),
+          ...plan.warnings,
+          ...(plan.authStrategy.source === "unsupported" ? ["Unsupported authentication requirements need manual review."] : []),
+        ],
+      }))
+      .filter((item) => item.reasons.length > 0);
+  }
+
+  return selectedTools
+    .map((tool) => {
+      const endpoint = spec.endpoints.find((candidate) => candidate.id === tool.id);
+      const reasons: string[] = [];
+
+      if (endpoint?.requestBody?.contentType && ![
+        "application/json",
+        "application/x-www-form-urlencoded",
+        "multipart/form-data",
+      ].some((contentType) => endpoint.requestBody?.contentType.includes(contentType))) {
+        reasons.push(`Request body content type "${endpoint.requestBody.contentType}" may require manual serialization review.`);
+      }
+
+      return {
+        id: tool.id,
+        label: endpoint ? `${endpoint.method} ${endpoint.path}` : tool.id,
+        toolName: tool.toolName,
+        reasons,
+      };
+    })
+    .filter((item) => item.reasons.length > 0);
+}
+
+function formatAuthConfig(config: AuthConfig): string {
+  if (config.type === "apiKey") {
+    return `API Key · ${config.apiKey?.name || "unnamed"} in ${config.apiKey?.in || "header"}`;
+  }
+
+  return getAuthLabel(config.type);
 }
 
 export default function ExportPage() {
@@ -159,9 +260,31 @@ export default function ExportPage() {
   const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
   const detectedAuth = getDetectedAuthOptions(spec);
   const detectedApiKey = detectedAuth.find((o) => o.type === "apiKey");
+  const selectedEndpointItems = selectedTools.map((tool) => ({
+    id: tool.endpointId,
+    label: getEndpointLabel(spec, tool.endpointId),
+    toolName: tool.toolName,
+  }));
+  const manualReviewEndpoints = getManualReviewEndpoints(spec, selectedEndpointItems);
   const port = parseInt(portValue, 10);
   const isPortValid = !isNaN(port) && port > 0 && port <= 65535;
   const isAuthValid = authConfig.type !== "apiKey" || Boolean(authConfig.apiKey?.name?.trim());
+  const duplicateToolNames = selectedTools
+    .map((tool) => tool.toolName.trim())
+    .filter((name, index, names) => name && names.indexOf(name) !== index);
+  const preGenerationWarnings = [
+    ...(selectedTools.length === 0 ? ["Select at least one endpoint before generating."] : []),
+    ...(!isPortValid ? ["Server port must be between 1 and 65535."] : []),
+    ...(!isAuthValid ? ["API key authentication needs a key name."] : []),
+    ...(duplicateToolNames.length > 0 ? [`Duplicate tool names will be renamed during generation: ${[...new Set(duplicateToolNames)].join(", ")}.`] : []),
+    ...(manualReviewEndpoints.length > 0 ? [`${manualReviewEndpoints.length} selected endpoint${manualReviewEndpoints.length === 1 ? "" : "s"} need manual review.`] : []),
+    ...(!exportFeatures.verification ? ["Post-generation verification is disabled."] : []),
+    ...(spec.baseUrl ? [] : ["No base URL was detected; generated code will use the configured fallback."]),
+  ];
+  const previewWarnings = [
+    ...(previewData?.validation?.warnings || []),
+    ...(previewData?.validation?.info || []),
+  ];
 
   const isFormValid =
     serverConfig.name.trim() !== "" &&
@@ -388,7 +511,7 @@ export default function ExportPage() {
                       <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Location</Label>
                       <Select
                         value={authConfig.apiKey?.in || "header"}
-                        onValueChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: authConfig.apiKey?.name || "X-API-Key", in: v as "header" | "query" } })}
+                        onValueChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: authConfig.apiKey?.name || "X-API-Key", in: v as "header" | "query" | "cookie" } })}
                       >
                         <SelectTrigger className="h-8 bg-background border-border text-xs">
                           <SelectValue />
@@ -396,6 +519,7 @@ export default function ExportPage() {
                         <SelectContent>
                           <SelectItem value="header">Header</SelectItem>
                           <SelectItem value="query">Query</SelectItem>
+                          <SelectItem value="cookie">Cookie</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -412,6 +536,59 @@ export default function ExportPage() {
                     ))}
                   </div>
                 )}
+              </Section>
+
+              <Section title="Export Readiness">
+                <div className="grid gap-3">
+                  <StatusRow
+                    icon={<FileText className="w-4 h-4" />}
+                    label="Selected endpoints"
+                    value={`${selectedEndpointItems.length} of ${spec.endpoints.length}`}
+                    tone={selectedEndpointItems.length > 0 ? "success" : "warning"}
+                  />
+                  <StatusRow
+                    icon={<ShieldCheck className="w-4 h-4" />}
+                    label="Detected auth"
+                    value={detectedAuth.length > 0 ? detectedAuth.map((item) => getAuthLabel(item.type)).join(", ") : "None detected"}
+                    tone={detectedAuth.length > 0 ? "success" : "muted"}
+                  />
+                  <StatusRow
+                    icon={<Cpu className="w-4 h-4" />}
+                    label="Chosen runtime"
+                    value={`${getRuntimeLabel(exportConfig)} · ${getTransportLabel(serverConfig.transport)}`}
+                    tone="success"
+                  />
+                  <StatusRow
+                    icon={previewData?.verification?.status === "failed" ? <XCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                    label="Verification result"
+                    value={
+                      previewData?.verification
+                        ? `${previewData.verification.status} · ${previewData.verification.mode}`
+                        : exportFeatures.verification
+                          ? "Not run yet"
+                          : "Disabled"
+                    }
+                    tone={previewData?.verification?.status === "failed" ? "danger" : previewData?.verification ? "success" : "muted"}
+                  />
+                </div>
+
+                <div className="mt-5 space-y-2">
+                  <div className="flex items-center gap-2 text-[10px] tracking-[0.18em] uppercase text-muted-foreground">
+                    <AlertTriangle className="w-3.5 h-3.5" />
+                    Warnings before generation
+                  </div>
+                  {preGenerationWarnings.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">No blocking readiness warnings detected.</p>
+                  ) : (
+                    <ul className="space-y-2">
+                      {preGenerationWarnings.map((warning) => (
+                        <li key={warning} className="border border-border px-3 py-2 text-xs text-muted-foreground leading-relaxed">
+                          {warning}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
               </Section>
             </div>
           </div>
@@ -450,12 +627,31 @@ export default function ExportPage() {
             {/* Preview content */}
             <div className="flex-1 overflow-y-auto">
               {previewFiles.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-center px-8">
-                  <div className="space-y-3">
+                <div className="h-full overflow-y-auto px-6 py-6">
+                  <div className="mb-6">
+                    <h2 className="text-sm font-semibold tracking-tight">Selected endpoints</h2>
+                    <div className="mt-3 space-y-2">
+                      {selectedEndpointItems.slice(0, 8).map((endpoint) => (
+                        <EndpointRow key={endpoint.id} label={endpoint.label} toolName={endpoint.toolName} />
+                      ))}
+                      {selectedEndpointItems.length > 8 && (
+                        <p className="text-[11px] text-muted-foreground">+{selectedEndpointItems.length - 8} more selected</p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <h2 className="text-sm font-semibold tracking-tight">Unsupported / manual review</h2>
+                    <ManualReviewList items={manualReviewEndpoints} />
+                  </div>
+
+                  <div className="flex items-center justify-center text-center py-14 border-t border-border">
+                    <div className="space-y-3">
                     <Terminal className="w-8 h-8 text-muted-foreground/30 mx-auto" />
                     <p className="text-xs text-muted-foreground leading-relaxed">
-                      Click &ldquo;Refresh&rdquo; to generate<br />a live code preview
+                      Click &ldquo;Refresh&rdquo; to generate<br />a live file preview and verification result
                     </p>
+                    </div>
                   </div>
                 </div>
               ) : (
@@ -502,8 +698,34 @@ export default function ExportPage() {
                           </div>
                         </div>
                       )}
+                      {previewWarnings.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="text-amber-500">Warnings</div>
+                          {previewWarnings.slice(0, 5).map((issue, index) => (
+                            <div key={`${issue.message}-${index}`} className="normal-case tracking-normal text-[11px] leading-relaxed">
+                              {issue.path ? `${issue.path}: ` : ""}{issue.message}
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
+                  <div className="border-b border-border px-6 py-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <h2 className="text-[10px] tracking-[0.18em] uppercase text-muted-foreground mb-2">Selected endpoints</h2>
+                        <div className="space-y-2 max-h-32 overflow-y-auto pr-1">
+                          {selectedEndpointItems.map((endpoint) => (
+                            <EndpointRow key={endpoint.id} label={endpoint.label} toolName={endpoint.toolName} compact />
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <h2 className="text-[10px] tracking-[0.18em] uppercase text-muted-foreground mb-2">Unsupported / manual review</h2>
+                        <ManualReviewList items={manualReviewEndpoints} compact />
+                      </div>
+                    </div>
+                  </div>
                 <Tabs defaultValue={previewFiles[0]?.name} className="flex flex-col h-full">
                   <TabsList className="flex-wrap h-auto gap-0 bg-background border-b border-border px-4 py-0 rounded-none">
                     {previewFiles.map((f) => (
@@ -541,7 +763,7 @@ export default function ExportPage() {
               <span className="text-primary/20">·</span>
               <span>{selectedTools.length} tools</span>
               <span className="text-primary/20">·</span>
-              <span>{getAuthLabel(authConfig.type)}</span>
+              <span>{formatAuthConfig(authConfig)}</span>
               <span className="text-primary/20">·</span>
               <span>{previewData?.manifest?.generatorVersion ? `v${previewData.manifest.generatorVersion}` : "preview"}</span>
             </div>
@@ -700,6 +922,103 @@ function FeatureToggle({
         <p className="text-[11px] text-muted-foreground">{description}</p>
       </div>
       <Switch checked={checked} onCheckedChange={onCheckedChange} />
+    </div>
+  );
+}
+
+function StatusRow({
+  icon,
+  label,
+  value,
+  tone,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  value: string;
+  tone: "success" | "warning" | "danger" | "muted";
+}) {
+  const toneClass = {
+    success: "text-primary border-primary/30",
+    warning: "text-amber-500 border-amber-500/30",
+    danger: "text-red border-red/30",
+    muted: "text-muted-foreground border-border",
+  }[tone];
+
+  return (
+    <div className={`flex items-start gap-3 border px-3 py-3 ${toneClass}`}>
+      <div className="mt-0.5">{icon}</div>
+      <div className="min-w-0">
+        <p className="text-[10px] tracking-[0.18em] uppercase text-muted-foreground">{label}</p>
+        <p className="text-xs text-foreground mt-1 leading-relaxed break-words">{value}</p>
+      </div>
+    </div>
+  );
+}
+
+function EndpointRow({
+  label,
+  toolName,
+  compact = false,
+}: {
+  label: string;
+  toolName: string;
+  compact?: boolean;
+}) {
+  const [method, ...pathParts] = label.split(" ");
+  const methodTone = {
+    GET: "text-primary border-primary/30",
+    POST: "text-blue-500 border-blue-500/30",
+    PUT: "text-amber-500 border-amber-500/30",
+    PATCH: "text-amber-500 border-amber-500/30",
+    DELETE: "text-red border-red/30",
+  }[method] || "text-muted-foreground border-border";
+
+  return (
+    <div className={`border border-border ${compact ? "px-2 py-1.5" : "px-3 py-2"}`}>
+      <div className="flex items-center gap-2 min-w-0">
+        <span className={`shrink-0 border px-1.5 py-0.5 text-[9px] font-semibold tracking-wider ${methodTone}`}>
+          {method}
+        </span>
+        <span className="truncate text-xs text-foreground">{pathParts.join(" ") || label}</span>
+      </div>
+      <p className="mt-1 truncate text-[10px] text-muted-foreground">{toolName}</p>
+    </div>
+  );
+}
+
+function ManualReviewList({
+  items,
+  compact = false,
+}: {
+  items: EndpointReviewItem[];
+  compact?: boolean;
+}) {
+  if (items.length === 0) {
+    return (
+      <div className={`border border-border text-muted-foreground ${compact ? "px-2 py-2 text-[10px]" : "px-3 py-3 text-xs"}`}>
+        No selected endpoints require manual review.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-2">
+      {items.map((item) => (
+        <div key={item.id} className={`border border-amber-500/30 ${compact ? "px-2 py-2" : "px-3 py-3"}`}>
+          <div className="flex items-center gap-2 min-w-0">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0 text-amber-500" />
+            <p className="truncate text-xs text-foreground">{item.label}</p>
+          </div>
+          <p className="mt-1 truncate text-[10px] text-muted-foreground">{item.toolName}</p>
+          <ul className="mt-2 space-y-1">
+            {item.reasons.slice(0, compact ? 1 : 3).map((reason) => (
+              <li key={reason} className="text-[10px] leading-relaxed text-muted-foreground">
+                {reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
     </div>
   );
 }
