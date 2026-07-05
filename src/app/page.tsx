@@ -1,22 +1,41 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ArrowRight, Loader2 } from "lucide-react";
+import { ArrowRight, Loader2, Sparkles, X } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { useProjectStore } from "@/store/project-store";
+import { parseOpenAPIFromContent } from "@/lib/parsers/openapi";
+
+// Light heuristic: does this pasted blob look like an API spec we can parse?
+// Actual parsing/validation is delegated to parseOpenAPIFromContent — this only
+// guards against hijacking arbitrary clipboard pastes (e.g. copied prose).
+function looksLikeSpec(text: string): boolean {
+  const t = text.trim();
+  if (t.length < 2) return false;
+  const head = t.slice(0, 4000).toLowerCase();
+  return (
+    /["']?(openapi|swagger)["']?\s*:/.test(head) || // OpenAPI / Swagger (JSON or YAML)
+    (head.includes("info") && (head.includes("paths") || head.includes("schema"))) ||
+    head.includes("_postman_id") || // Postman collection
+    head.includes("postman_collection")
+  );
+}
 
 export default function HomePage() {
   const router = useRouter();
-  const { spec } = useProjectStore();
+  const { spec, setSpec, setCurrentStep, setError, error } = useProjectStore();
   const [isNavigating, setIsNavigating] = useState(false);
+  const [isSampleLoading, setIsSampleLoading] = useState(false);
+  const [isPasteParsing, setIsPasteParsing] = useState(false);
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => {
-    if (spec) router.push("/editor");
-  }, [spec, router]);
+  // Do NOT auto-redirect when a persisted/in-memory spec exists. Persistence is
+  // now on, so bouncing returning users into the editor would trap them here.
+  // Instead we surface a "Continue where you left off" CTA below.
+  const hasSession = Boolean(spec);
 
   useEffect(() => {
     const t = setTimeout(() => setMounted(true), 50);
@@ -27,6 +46,71 @@ export default function HomePage() {
     setIsNavigating(true);
     router.push("/import");
   };
+
+  const handleContinue = () => {
+    setIsNavigating(true);
+    setCurrentStep("editor");
+    router.push("/editor");
+  };
+
+  // Mirrors import/page.tsx's handleTrySample: fetch the bundled sample spec,
+  // parse it through the shared parser, store it, and advance to the editor.
+  const handleTrySample = async () => {
+    setIsSampleLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/samples/petstore.json");
+      if (!res.ok) throw new Error("Could not load the sample spec");
+      const content = await res.text();
+      const parsedSpec = await parseOpenAPIFromContent(content, "petstore.json");
+      setSpec(parsedSpec, "Petstore (sample)");
+      setCurrentStep("editor");
+      router.push("/editor");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load sample");
+      setIsSampleLoading(false);
+    }
+  };
+
+  // Global ⌘V / Ctrl+V paste — reuse the shared parser, then jump to the editor.
+  const handleGlobalPaste = useCallback(
+    async (e: ClipboardEvent) => {
+      // Don't hijack paste while the user is typing into an input/textarea/editable.
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable)
+      ) {
+        return;
+      }
+
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (!looksLikeSpec(text)) return;
+
+      e.preventDefault();
+      setIsPasteParsing(true);
+      setError(null);
+      try {
+        const parsedSpec = await parseOpenAPIFromContent(text, "pasted-spec");
+        setSpec(parsedSpec, "Pasted Content");
+        setCurrentStep("editor");
+        router.push("/editor");
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "That didn't look like a valid spec",
+        );
+        setIsPasteParsing(false);
+      }
+    },
+    [router, setSpec, setCurrentStep, setError],
+  );
+
+  useEffect(() => {
+    window.addEventListener("paste", handleGlobalPaste);
+    return () => window.removeEventListener("paste", handleGlobalPaste);
+  }, [handleGlobalPaste]);
 
   return (
     <div className="min-h-screen relative">
@@ -68,8 +152,27 @@ export default function HomePage() {
                 in TypeScript or Python.
               </p>
 
+              {/* Continue where you left off — only when a session is persisted */}
+              {hasSession && (
+                <button
+                  onClick={handleContinue}
+                  disabled={isNavigating}
+                  className="flex items-center gap-3 w-full max-w-md border border-primary/40 bg-primary/[0.04] hover:bg-primary/[0.08] hover:border-primary/60 px-4 py-3 transition-colors text-left group"
+                >
+                  <div className="flex-1">
+                    <div className="text-[10px] text-muted-foreground tracking-[0.15em] uppercase">
+                      Resume session
+                    </div>
+                    <div className="text-sm font-semibold text-foreground">
+                      Continue where you left off
+                    </div>
+                  </div>
+                  <ArrowRight className="w-4 h-4 text-primary transition-transform group-hover:translate-x-1" />
+                </button>
+              )}
+
               {/* CTA */}
-              <div className="flex items-center gap-6 pt-4">
+              <div className="flex flex-wrap items-center gap-4 pt-4">
                 <Button
                   onClick={handleImport}
                   disabled={isNavigating}
@@ -88,6 +191,25 @@ export default function HomePage() {
                   )}
                 </Button>
 
+                <Button
+                  variant="outline"
+                  onClick={handleTrySample}
+                  disabled={isSampleLoading || isNavigating}
+                  className="border-border hover:border-primary/60 hover:text-primary px-8 py-6 text-sm font-semibold tracking-wide"
+                >
+                  {isSampleLoading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Loading sample
+                    </>
+                  ) : (
+                    <>
+                      <Sparkles className="w-4 h-4 mr-2 text-primary" />
+                      Try a sample API
+                    </>
+                  )}
+                </Button>
+
                 <Link
                   href="https://github.com/Tiwariji-07/make-mcp#readme"
                   target="_blank"
@@ -99,9 +221,18 @@ export default function HomePage() {
               </div>
 
               {/* Keyboard hint */}
-              <div className="pt-4 text-[11px] text-muted-foreground tracking-wider">
-                <kbd className="px-2 py-1 border border-border bg-surface text-xs">⌘V</kbd>
-                <span className="ml-2">to paste spec directly</span>
+              <div className="pt-4 text-[11px] text-muted-foreground tracking-wider flex items-center">
+                {isPasteParsing ? (
+                  <span className="flex items-center text-primary">
+                    <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                    Parsing pasted spec...
+                  </span>
+                ) : (
+                  <>
+                    <kbd className="px-2 py-1 border border-border bg-surface text-xs">⌘V</kbd>
+                    <span className="ml-2">to paste spec directly</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -242,6 +373,19 @@ export default function HomePage() {
             </div>
           </div>
         </footer>
+
+        {/* Error bar — mirrors the import page */}
+        {error && (
+          <div className="fixed bottom-0 left-0 right-0 bg-red/10 border-t-2 border-red px-6 py-3 flex items-center justify-between z-30">
+            <span className="text-sm text-red">
+              <span className="font-bold tracking-wider uppercase">Error: </span>
+              {error}
+            </span>
+            <button onClick={() => setError(null)} className="text-red hover:text-foreground">
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        )}
       </main>
     </div>
   );

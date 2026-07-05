@@ -1,5 +1,4 @@
 import type {
-    GeneratedManifest,
     GeneratedProject,
     GenerationPlan,
     GenerationRequestBody,
@@ -7,46 +6,25 @@ import type {
     ToolAuthRequirementPlan,
 } from "../types.ts";
 import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
-import { getNodeTransportStrategy } from "../strategies/transport.ts";
+import { getNodeTransportStrategy, LOCALHOST_ORIGIN_HOSTS } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
 import { NODE_MCP_SDK_VERSION } from "../runtime-versions.ts";
 import { toJsStringLiteral } from "../utils.ts";
-import { toZodType } from "../schema.ts";
+import { schemaToZodType, toZodType } from "../schema.ts";
+import {
+    buildManifest,
+    expectedSerializedParameterValue,
+    getEnvExample,
+    getExpectedJsonBody,
+    getExpectedPath,
+    getExpectedQueryEntries,
+    getTestArgs,
+    renderDockerCompose,
+    scalarToExpectedString,
+} from "./shared.ts";
 
 function renderNodeSerializationOptions(param: GenerationTool["params"][number]): string {
     return `{ location: ${JSON.stringify(param.location)}, style: ${JSON.stringify(param.style)}, explode: ${param.explode === undefined ? "undefined" : String(param.explode)} }`;
-}
-
-function buildManifest(plan: GenerationPlan): GeneratedManifest {
-    return {
-        generatorVersion: plan.generatorVersion,
-        contractVersion: plan.contractVersion,
-        language: "node",
-        framework: plan.runtime.framework,
-        features: plan.features,
-        transport: plan.runtime.transport,
-        serverName: plan.server.name,
-        generatedAt: plan.generatedAt,
-        toolCount: plan.tools.length,
-    };
-}
-
-function getEnvExample(plan: GenerationPlan): string {
-    const authSchemes = collectAuthSchemes(plan);
-    const lines = [`# Base URL for the API`, `API_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}`];
-
-    if (authSchemes.length > 0) {
-        lines.push("", "# Auth");
-    }
-
-    for (const auth of authSchemes) {
-        if (auth.apiKeyEnvVar) lines.push(`${auth.apiKeyEnvVar}=your_api_key_here`);
-        if (auth.bearerTokenEnvVar) lines.push(`${auth.bearerTokenEnvVar}=your_token_here`);
-        if (auth.basicUsernameEnvVar) lines.push(`${auth.basicUsernameEnvVar}=your_username`);
-        if (auth.basicPasswordEnvVar) lines.push(`${auth.basicPasswordEnvVar}=your_password`);
-    }
-
-    return `${lines.join("\n")}\n`;
 }
 
 function getNodeBodyExpression(requestBody: GenerationRequestBody): string {
@@ -205,10 +183,59 @@ ${bodyRender.bodyOption}  });
 }`;
 }
 
+function isObjectSchemaWithProperties(schema?: Record<string, unknown>): boolean {
+    return Boolean(
+        schema &&
+        schema.type === "object" &&
+        schema.properties &&
+        typeof schema.properties === "object" &&
+        !Array.isArray(schema.properties) &&
+        Object.keys(schema.properties as Record<string, unknown>).length > 0
+    );
+}
+
+// Render an MCP `annotations` object literal (MCP 2025-11-25). Behavioral hints
+// derived from HTTP method semantics; advisory only.
+function renderNodeAnnotations(annotations?: GenerationTool["annotations"]): string | undefined {
+    if (!annotations) return undefined;
+
+    const entries: string[] = [];
+    if (annotations.title) entries.push(`      title: ${toJsStringLiteral(annotations.title)}`);
+    if (annotations.readOnlyHint !== undefined) entries.push(`      readOnlyHint: ${annotations.readOnlyHint}`);
+    if (annotations.destructiveHint !== undefined) entries.push(`      destructiveHint: ${annotations.destructiveHint}`);
+    if (annotations.idempotentHint !== undefined) entries.push(`      idempotentHint: ${annotations.idempotentHint}`);
+    if (annotations.openWorldHint !== undefined) entries.push(`      openWorldHint: ${annotations.openWorldHint}`);
+
+    if (entries.length === 0) return undefined;
+    return `{\n${entries.join(",\n")}\n    }`;
+}
+
+// Build the MCP `outputSchema` (a Zod raw shape) from the tool's derived JSON
+// response schema. Object schemas with named properties map to a shape keyed by
+// those properties; any other shape (array, primitive, unconstrained object) is
+// wrapped as `{ result: <zod> }` because MCP output schemas must be object shapes.
+// Returns undefined when there is no usable output schema.
+function buildNodeOutputSchema(outputSchema?: Record<string, unknown>): { shape: string; wrapsResult: boolean } | undefined {
+    if (!outputSchema || Object.keys(outputSchema).length === 0) return undefined;
+
+    if (isObjectSchemaWithProperties(outputSchema)) {
+        const properties = outputSchema.properties as Record<string, Record<string, unknown>>;
+        const required = new Set((outputSchema.required || []) as string[]);
+        const fields = Object.entries(properties).map(([key, propertySchema]) => {
+            let value = schemaToZodType(propertySchema);
+            if (!required.has(key)) value += ".optional()";
+            return `      ${JSON.stringify(key)}: ${value}`;
+        });
+        return { shape: `{\n${fields.join(",\n")}\n    }`, wrapsResult: false };
+    }
+
+    return { shape: `{\n      result: ${schemaToZodType(outputSchema)}\n    }`, wrapsResult: true };
+}
+
 function renderNodeServerTool(tool: GenerationTool, operationIndex: number): string {
     const schemaFields = tool.params
         .map((param) => {
-            let line = `    ${JSON.stringify(param.argName)}: ${toZodType(param.type, param.schema)}`;
+            let line = `      ${JSON.stringify(param.argName)}: ${toZodType(param.type, param.schema)}`;
             if (!param.required) {
                 line += ".optional()";
             }
@@ -219,19 +246,59 @@ function renderNodeServerTool(tool: GenerationTool, operationIndex: number): str
         })
         .join("\n");
 
-    return `server.tool(
+    const output = buildNodeOutputSchema(tool.outputSchema);
+    const annotations = renderNodeAnnotations(tool.annotations);
+
+    const configEntries: string[] = [];
+    if (tool.title) configEntries.push(`    title: ${toJsStringLiteral(tool.title)}`);
+    configEntries.push(`    description: ${toJsStringLiteral(tool.description)}`);
+    configEntries.push(`    inputSchema: {\n${schemaFields}\n    }`);
+    if (output) configEntries.push(`    outputSchema: ${output.shape}`);
+    if (annotations) configEntries.push(`    annotations: ${annotations}`);
+
+    // With an outputSchema, the SDK requires the handler to return structuredContent.
+    // Parse the operation's JSON text into structured content, wrapping non-object
+    // payloads under `result` to match the wrapped output shape. Falls back to a
+    // text-only result when the response body is not valid JSON.
+    const successBody = output
+        ? output.wrapsResult
+            ? `      let structuredContent: Record<string, unknown> | undefined;
+      try {
+        structuredContent = { result: JSON.parse(text) };
+      } catch {
+        structuredContent = undefined;
+      }
+      return structuredContent
+        ? { content: [{ type: "text" as const, text }], structuredContent }
+        : { content: [{ type: "text" as const, text }] };`
+            : `      let structuredContent: Record<string, unknown> | undefined;
+      try {
+        const parsed = JSON.parse(text);
+        structuredContent = parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? parsed as Record<string, unknown>
+          : undefined;
+      } catch {
+        structuredContent = undefined;
+      }
+      return structuredContent
+        ? { content: [{ type: "text" as const, text }], structuredContent }
+        : { content: [{ type: "text" as const, text }] };`
+        : `      return { content: [{ type: "text" as const, text }] };`;
+
+    return `server.registerTool(
   ${JSON.stringify(tool.displayName)},
-  ${toJsStringLiteral(tool.description)},
   {
-${schemaFields}
+${configEntries.join(",\n")}
   },
   async (args: Record<string, unknown>) => {
     try {
       const text = await operations[${operationIndex}](args);
-      return { content: [{ type: "text", text }] };
+${successBody}
     } catch (error) {
+      // Surface upstream HTTP failures and thrown errors as tool errors (isError)
+      // so the model can self-correct rather than the transport failing.
       return {
-        content: [{ type: "text", text: \`Error: \${error instanceof Error ? error.message : "Unknown error"}\` }],
+        content: [{ type: "text" as const, text: \`Error: \${error instanceof Error ? error.message : "Unknown error"}\` }],
         isError: true,
       };
     }
@@ -254,11 +321,12 @@ function renderIndex(plan: GenerationPlan): string {
     return `import "dotenv/config";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 ${transportStrategy.imports}
-import { MCP_SERVER_CONFIG } from "./config.js";
+import { ${plan.runtime.transport === "stdio" ? "MCP_SERVER_CONFIG" : "MCP_SERVER_CONFIG, assertMcpServerAccessConfig"} } from "./config.js";
 import { createServer } from "./mcp/server.js";
+${plan.runtime.transport === "stdio" ? "" : 'import { authorizeMcpRequest, handleMcpPreflight } from "./mcp/access.js";'}
 
 async function main() {
-${bootstrap}
+${plan.runtime.transport === "stdio" ? "" : "  assertMcpServerAccessConfig();\n"}${bootstrap}
 }
 
 main().catch(console.error);
@@ -288,12 +356,146 @@ export const AUTH_SCHEMES = {
 ${authSchemeEntries}
 } as const;
 
+function parseMcpAllowedOrigins(value: string | undefined, fallback: readonly string[]): string[] {
+  if (value === undefined || value.trim() === "") return [...fallback];
+  return value.split(",").map((origin) => origin.trim()).filter(Boolean);
+}
+
 export const MCP_SERVER_CONFIG = {
   name: ${JSON.stringify(plan.server.name)},
   version: ${JSON.stringify(plan.server.version)},
   host: ${JSON.stringify(plan.server.host)},
   port: ${plan.server.port},
 } as const;
+
+export const MCP_SERVER_ACCESS_CONFIG: {
+  authType: "none" | "bearer";
+  authToken: string;
+  allowedOrigins: string[];
+} = {
+  authType: ${JSON.stringify(plan.mcpServerAuth.type)},
+  authToken: ${plan.mcpServerAuth.type === "bearer" ? `process.env.${plan.mcpServerAuth.tokenEnvVar} || ""` : `""`},
+  allowedOrigins: parseMcpAllowedOrigins(process.env.${plan.mcpServerAuth.allowedOriginsEnvVar}, ${JSON.stringify(plan.mcpServerAuth.allowedOrigins)}),
+};
+
+export function assertMcpServerAccessConfig() {
+  if (MCP_SERVER_ACCESS_CONFIG.authType === "bearer" && !MCP_SERVER_ACCESS_CONFIG.authToken) {
+    throw new Error("${plan.mcpServerAuth.tokenEnvVar} is required when MCP server bearer auth is enabled.");
+  }
+}
+`;
+}
+
+function renderMcpAccess(): string {
+    return `import { timingSafeEqual } from "node:crypto";
+import { MCP_SERVER_ACCESS_CONFIG } from "../config.js";
+
+type HeaderValue = string | string[] | undefined;
+type McpAccessRequest = { method?: string; headers: Record<string, HeaderValue> };
+type McpAccessResponse = {
+  setHeader?(name: string, value: string): void;
+  writeHead(statusCode: number, headers?: Record<string, string>): void;
+  end(body?: string): void;
+};
+
+// Hosts treated as local when no explicit allow-list is configured (deny-by-default).
+const LOCALHOST_HOSTS = new Set<string>(${JSON.stringify([...LOCALHOST_ORIGIN_HOSTS])});
+
+function getHeader(req: McpAccessRequest, name: string): string | undefined {
+  const value = req.headers[name.toLowerCase()];
+  if (Array.isArray(value)) return value[0];
+  return value;
+}
+
+function isLocalhostOrigin(origin: string): boolean {
+  try {
+    return LOCALHOST_HOSTS.has(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isOriginAllowed(origin: string | undefined, allowedOrigins: readonly string[]): boolean {
+  // Requests without an Origin header (e.g. non-browser clients) are permitted.
+  if (!origin) return true;
+  // Deny-by-default: with no configured allow-list, only localhost origins are accepted
+  // to guard against DNS-rebinding attacks against locally-bound HTTP transports.
+  if (allowedOrigins.length === 0) return isLocalhostOrigin(origin);
+  return allowedOrigins.includes(origin);
+}
+
+function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufferA = Buffer.from(a);
+  const bufferB = Buffer.from(b);
+  if (bufferA.length !== bufferB.length) return false;
+  return timingSafeEqual(bufferA, bufferB);
+}
+
+export function isBearerAuthorized(authorization: string | undefined, token: string): boolean {
+  if (!token || !authorization) return false;
+  return timingSafeStringEqual(authorization, \`Bearer \${token}\`);
+}
+
+function getCorsHeaders(origin: string | undefined): Record<string, string> {
+  const headers: Record<string, string> = {
+    Vary: "Origin",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, MCP-Protocol-Version",
+  };
+  if (origin) headers["Access-Control-Allow-Origin"] = origin;
+  return headers;
+}
+
+function applyCorsHeaders(res: McpAccessResponse, origin: string | undefined) {
+  for (const [name, value] of Object.entries(getCorsHeaders(origin))) {
+    res.setHeader?.(name, value);
+  }
+}
+
+export function handleMcpPreflight(req: McpAccessRequest, res: McpAccessResponse): boolean {
+  if (req.method !== "OPTIONS") return false;
+
+  const origin = getHeader(req, "origin");
+  if (!isOriginAllowed(origin, MCP_SERVER_ACCESS_CONFIG.allowedOrigins)) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Origin not allowed" }));
+    return true;
+  }
+
+  res.writeHead(204, getCorsHeaders(origin));
+  res.end();
+  return true;
+}
+
+export function authorizeMcpRequest(req: McpAccessRequest, res: McpAccessResponse): boolean {
+  const origin = getHeader(req, "origin");
+  if (!isOriginAllowed(origin, MCP_SERVER_ACCESS_CONFIG.allowedOrigins)) {
+    res.writeHead(403, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Origin not allowed" }));
+    return false;
+  }
+  applyCorsHeaders(res, origin);
+
+  if (MCP_SERVER_ACCESS_CONFIG.authType === "bearer") {
+    if (!MCP_SERVER_ACCESS_CONFIG.authToken) {
+      res.writeHead(500, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ error: "MCP_AUTH_TOKEN is required" }));
+      return false;
+    }
+
+    const authorization = getHeader(req, "authorization");
+    if (!isBearerAuthorized(authorization, MCP_SERVER_ACCESS_CONFIG.authToken)) {
+      res.writeHead(401, {
+        "Content-Type": "application/json",
+        "WWW-Authenticate": "Bearer",
+      });
+      res.end(JSON.stringify({ error: "Missing or invalid bearer token" }));
+      return false;
+    }
+  }
+
+  return true;
+}
 `;
 }
 
@@ -539,7 +741,368 @@ ${plan.tools.map((tool) => `  ${renderNodeOperation(tool)}`).join(",\n")}
 `;
 }
 
+// ---------------------------------------------------------------------------
+// COMPACT MODE (meta-tools) — Node target
+//
+// When `plan.runtime.compactMode` is true the server registers exactly three
+// meta-tools (list/get/invoke) instead of one tool per operation. All three read
+// from a single immutable in-memory registry (`META_OPERATIONS`) built from
+// `plan.tools`, keyed by tool id. `invoke_api_endpoint` dispatches through the
+// SAME per-operation request functions (`operations[]`) used in non-compact mode,
+// so request building / auth is never reinvented. See the DESIGN CONTRACT on
+// GenerationPlan.runtime.compactMode in types.ts.
+// ---------------------------------------------------------------------------
+
+// Build the Zod raw-shape body for one operation's flat argument object. Mirrors
+// the inputSchema emitted per-operation in renderNodeServerTool so invoke's
+// validation matches exactly what a non-compact tool would enforce.
+function renderCompactValidatorShape(tool: GenerationTool): string {
+    if (tool.params.length === 0) return "{}";
+    const fields = tool.params
+        .map((param) => {
+            let line = `      ${JSON.stringify(param.argName)}: ${toZodType(param.type, param.schema)}`;
+            if (!param.required) line += ".optional()";
+            return `${line},`;
+        })
+        .join("\n");
+    return `{\n${fields}\n    }`;
+}
+
+// Lightweight, secret-free auth descriptor for get_api_endpoint_schema output.
+function renderCompactAuthDescriptor(tool: GenerationTool): string {
+    const requirements = tool.authStrategy.requirements;
+    if (!requirements?.length) return "[]";
+    const schemes = new Map<string, string>();
+    for (const requirement of requirements) {
+        for (const scheme of requirement.schemes) {
+            const entry: Record<string, unknown> = { type: scheme.strategy, name: scheme.schemeName };
+            if (scheme.apiKeyName) entry.apiKeyName = scheme.apiKeyName;
+            if (scheme.apiKeyLocation) entry.in = scheme.apiKeyLocation;
+            schemes.set(`${scheme.strategy}:${scheme.schemeName}`, JSON.stringify(entry));
+        }
+    }
+    return `[${[...schemes.values()].join(", ")}]`;
+}
+
+// One immutable registry entry. `parameters` describes how the model-supplied
+// { path, query, header, body } object maps back onto the flat args the stored
+// operation function expects; `validator` is the compiled Zod schema; `invoke`
+// is the stored per-operation request function (dispatch never rebuilds a URL).
+function renderCompactRegistryEntry(tool: GenerationTool, index: number): string {
+    const parameterDescriptors = tool.params
+        .map((param) => `      { name: ${JSON.stringify(param.argName)}, in: ${JSON.stringify(param.location)}, required: ${param.required}, schema: ${JSON.stringify(param.schema ?? {})} }`)
+        .join(",\n");
+
+    const output = buildNodeOutputSchema(tool.outputSchema);
+    const bodyParamNames = tool.requestBody?.params.map((param) => param.argName) ?? [];
+
+    const entries: string[] = [
+        `    id: ${JSON.stringify(tool.id)}`,
+        `    method: ${JSON.stringify(tool.method)}`,
+        `    path: ${JSON.stringify(tool.path)}`,
+        `    summary: ${toJsStringLiteral((tool.title || tool.description || "").slice(0, 120))}`,
+        `    description: ${toJsStringLiteral(tool.description)}`,
+        `    tags: [] as string[]`,
+        `    parameters: [\n${parameterDescriptors}\n    ]`,
+        `    bodyContentKind: ${JSON.stringify(tool.requestBody?.contentKind ?? null)}`,
+        `    bodyParamNames: ${JSON.stringify(bodyParamNames)}`,
+        `    requestBody: ${JSON.stringify(tool.requestBody?.schema ?? null)}`,
+        `    outputSchema: ${output ? output.shape : "undefined"}`,
+        `    auth: ${renderCompactAuthDescriptor(tool)}`,
+        `    validator: z.object(${renderCompactValidatorShape(tool)}).strict()`,
+        `    operationIndex: ${index}`,
+    ];
+
+    return `  {\n${entries.join(",\n")}\n  }`;
+}
+
+function renderCompactServer(plan: GenerationPlan): string {
+    const registryEntries = plan.tools.map(renderCompactRegistryEntry).join(",\n");
+
+    return `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { z } from "zod";
+import { MCP_SERVER_CONFIG } from "../config.js";
+import { operations } from "../api/operations.js";
+
+// Maximum characters of upstream response returned in a single invoke envelope.
+// Bounds the context cost of one call regardless of API payload size.
+const MAX_INVOKE_RESULT_CHARS = 100_000;
+
+type MetaParameter = { name: string; in: string; required: boolean; schema: Record<string, unknown> };
+type MetaValidator = { safeParse(value: unknown): { success: true; data: unknown } | { success: false; error: { issues: unknown } } };
+type MetaOperation = {
+  id: string;
+  method: string;
+  path: string;
+  summary: string;
+  description: string;
+  tags: string[];
+  parameters: MetaParameter[];
+  bodyContentKind: string | null;
+  bodyParamNames: string[];
+  requestBody: Record<string, unknown> | null;
+  outputSchema?: Record<string, unknown>;
+  auth: Array<Record<string, unknown>>;
+  validator: MetaValidator;
+  operationIndex: number;
+};
+
+// Immutable operation registry — the single source of truth for all three
+// meta-tools. The id space is CLOSED: invoke can only ever reach a real,
+// generated operation. Frozen so it cannot be mutated at runtime.
+const META_OPERATIONS: readonly MetaOperation[] = Object.freeze([
+${registryEntries}
+]);
+
+const META_OPERATIONS_BY_ID: ReadonlyMap<string, MetaOperation> = new Map(
+  META_OPERATIONS.map((operation) => [operation.id, operation] as const)
+);
+
+function encodeCursor(offset: number): string {
+  return Buffer.from(String(offset), "utf8").toString("base64");
+}
+
+function decodeCursor(cursor: string | undefined): number {
+  if (!cursor) return 0;
+  const parsed = Number.parseInt(Buffer.from(cursor, "base64").toString("utf8"), 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+// Flatten the model-supplied { path, query, header, body } object onto the flat,
+// argName-keyed args object the stored operation function expects. Values are
+// read strictly by the registry's parameter descriptors — never from arbitrary
+// keys — so the model cannot smuggle in unknown parameters.
+function toOperationArgs(
+  operation: MetaOperation,
+  parameters: { path?: unknown; query?: unknown; header?: unknown; body?: unknown } | undefined
+): Record<string, unknown> {
+  const args: Record<string, unknown> = {};
+  const buckets: Record<string, Record<string, unknown>> = {
+    path: asObject(parameters?.path),
+    query: asObject(parameters?.query),
+    header: asObject(parameters?.header),
+    cookie: asObject((parameters as Record<string, unknown> | undefined)?.cookie),
+  };
+
+  for (const parameter of operation.parameters) {
+    if (parameter.in === "body") continue;
+    const bucket = buckets[parameter.in];
+    if (bucket && parameter.name in bucket) {
+      args[parameter.name] = bucket[parameter.name];
+    }
+  }
+
+  // Request body. A single raw body param takes the whole \`body\`; a flattened
+  // object body maps each named field out of the \`body\` object by argName.
+  const body = parameters?.body;
+  if (operation.bodyContentKind === "rawJsonObject" || operation.bodyContentKind === "rawArray" || operation.bodyContentKind === "text" || operation.bodyContentKind === "binary") {
+    if (operation.bodyParamNames[0] !== undefined) args[operation.bodyParamNames[0]] = body;
+  } else if (operation.bodyParamNames.length > 0) {
+    const bodyObject = asObject(body);
+    for (const name of operation.bodyParamNames) {
+      if (name in bodyObject) args[name] = bodyObject[name];
+    }
+  }
+
+  return args;
+}
+
+function asObject(value: unknown): Record<string, unknown> {
+  if (value && typeof value === "object" && !Array.isArray(value)) return value as Record<string, unknown>;
+  return {};
+}
+
+function boundedResult(text: string): { data: unknown; truncated: boolean } {
+  const truncated = text.length > MAX_INVOKE_RESULT_CHARS;
+  const bounded = truncated ? text.slice(0, MAX_INVOKE_RESULT_CHARS) : text;
+  try {
+    return { data: JSON.parse(bounded), truncated };
+  } catch {
+    return { data: bounded, truncated };
+  }
+}
+
+export function createServer() {
+  const server = new McpServer({
+    name: MCP_SERVER_CONFIG.name,
+    version: MCP_SERVER_CONFIG.version,
+  });
+
+  const HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] as const;
+
+  server.registerTool(
+    "list_api_endpoints",
+    {
+      title: "List API Endpoints",
+      description: "Search and list available API operations. Returns lightweight records (id, method, path, summary, tags) — NOT full parameter schemas. Call get_api_endpoint_schema before invoking.",
+      inputSchema: {
+        search: z.string().optional().describe("Free-text over id, summary, description, path. Omit to browse all."),
+        tag: z.string().optional().describe("Filter to one tag / resource group."),
+        method: z.enum(HTTP_METHODS).optional().describe("Filter by HTTP method."),
+        limit: z.number().int().min(1).max(100).optional().describe("Max records to return (default 50)."),
+        cursor: z.string().optional().describe("Opaque cursor from a previous response's next_cursor."),
+      },
+      annotations: {
+        title: "List API Endpoints",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args: { search?: string; tag?: string; method?: string; limit?: number; cursor?: string }) => {
+      const search = args.search?.trim().toLowerCase();
+      const tag = args.tag?.trim().toLowerCase();
+      const method = args.method?.toUpperCase();
+      const limit = args.limit ?? 50;
+      const offset = decodeCursor(args.cursor);
+
+      const matches = META_OPERATIONS.filter((operation) => {
+        if (method && operation.method !== method) return false;
+        if (tag && !operation.tags.some((entry) => entry.toLowerCase() === tag)) return false;
+        if (search) {
+          const haystack = \`\${operation.id} \${operation.method} \${operation.path} \${operation.summary} \${operation.description} \${operation.tags.join(" ")}\`.toLowerCase();
+          if (!haystack.includes(search)) return false;
+        }
+        return true;
+      });
+
+      const page = matches.slice(offset, offset + limit);
+      const nextOffset = offset + page.length;
+      const structuredContent = {
+        endpoints: page.map((operation) => ({
+          id: operation.id,
+          method: operation.method,
+          path: operation.path,
+          summary: operation.summary,
+          tags: operation.tags,
+        })),
+        next_cursor: nextOffset < matches.length ? encodeCursor(nextOffset) : undefined,
+        total_estimate: matches.length,
+      };
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(structuredContent, null, 2) }],
+        structuredContent,
+      };
+    }
+  );
+
+  server.registerTool(
+    "get_api_endpoint_schema",
+    {
+      title: "Get API Endpoint Schema",
+      description: "Get the full input (parameters + request body) and output schema, plus description, for one operation by id. Call after list_api_endpoints and before invoke_api_endpoint.",
+      inputSchema: {
+        endpointId: z.string().describe("The endpoint id returned by list_api_endpoints."),
+      },
+      annotations: {
+        title: "Get API Endpoint Schema",
+        readOnlyHint: true,
+        destructiveHint: false,
+        idempotentHint: true,
+        openWorldHint: false,
+      },
+    },
+    async (args: { endpointId: string }) => {
+      const operation = META_OPERATIONS_BY_ID.get(args.endpointId);
+      if (!operation) {
+        const payload = { error: { type: "unknown_operation", message: \`Unknown endpoint id: \${args.endpointId}\` } };
+        return { content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }], structuredContent: payload, isError: true };
+      }
+
+      const structuredContent = {
+        id: operation.id,
+        method: operation.method,
+        path: operation.path,
+        summary: operation.summary,
+        description: operation.description,
+        parameters: operation.parameters.filter((parameter) => parameter.in !== "body").map((parameter) => ({
+          name: parameter.name,
+          in: parameter.in,
+          required: parameter.required,
+          schema: parameter.schema,
+        })),
+        requestBody: operation.requestBody ?? undefined,
+        auth: operation.auth,
+      };
+
+      return {
+        content: [{ type: "text" as const, text: JSON.stringify(structuredContent, null, 2) }],
+        structuredContent,
+      };
+    }
+  );
+
+  server.registerTool(
+    "invoke_api_endpoint",
+    {
+      title: "Invoke API Endpoint",
+      description: "Invoke one operation by id. Arguments are validated against that operation's schema before any request is made.",
+      inputSchema: {
+        endpointId: z.string().describe("The endpoint id to invoke."),
+        parameters: z.object({
+          path: z.record(z.unknown()).optional(),
+          query: z.record(z.unknown()).optional(),
+          header: z.record(z.unknown()).optional(),
+          body: z.unknown().optional(),
+        }).optional().describe("Inputs by location, plus a body key for the request body."),
+      },
+      annotations: {
+        title: "Invoke API Endpoint",
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (args: { endpointId: string; parameters?: { path?: unknown; query?: unknown; header?: unknown; body?: unknown } }) => {
+      const respond = (payload: Record<string, unknown>, isError: boolean) => ({
+        content: [{ type: "text" as const, text: JSON.stringify(payload, null, 2) }],
+        structuredContent: payload,
+        ...(isError ? { isError: true } : {}),
+      });
+
+      // (a) Closed registry — refuse unknown ids and make NO HTTP call.
+      const operation = META_OPERATIONS_BY_ID.get(args.endpointId);
+      if (!operation) {
+        return respond({ ok: false, endpointId: args.endpointId, error: { type: "unknown_operation", message: \`Unknown endpoint id: \${args.endpointId}\` } }, true);
+      }
+
+      // Map the { path, query, header, body } object onto flat operation args by
+      // the registry's parameter descriptors (never arbitrary model keys).
+      const operationArgs = toOperationArgs(operation, args.parameters);
+
+      // (b) Validate BEFORE any network I/O against the stored operation schema.
+      const validation = operation.validator.safeParse(operationArgs);
+      if (!validation.success) {
+        return respond({ ok: false, endpointId: operation.id, error: { type: "validation_error", message: "Arguments failed schema validation.", details: validation.error.issues } }, true);
+      }
+
+      // (c) Dispatch through the stored per-operation request function, which
+      // builds the request from the operation's method + path template and
+      // (d) applies auth server-side from config/env. The model never supplies a
+      // URL or secret.
+      try {
+        const text = await operations[operation.operationIndex](validation.data as Record<string, unknown>);
+        const { data, truncated } = boundedResult(text);
+        return respond({ ok: true, status: 200, endpointId: operation.id, data, ...(truncated ? { truncated: true } : {}) }, false);
+      } catch (error) {
+        return respond({ ok: false, endpointId: operation.id, error: { type: "http_error", message: error instanceof Error ? error.message : "Unknown error" } }, true);
+      }
+    }
+  );
+
+  return server;
+}
+`;
+}
+
 function renderServer(plan: GenerationPlan): string {
+    if (plan.runtime.compactMode) {
+        return renderCompactServer(plan);
+    }
+
     return `import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { MCP_SERVER_CONFIG } from "../config.js";
@@ -577,208 +1140,97 @@ function renderReadme(plan: GenerationPlan): string {
 }
 
 function renderDockerfile(plan: GenerationPlan): string {
-    return `FROM node:20-alpine
+    // Multi-stage build: compile in a build stage, ship a lean non-root runtime.
+    // stdio:  docker run -i --rm IMAGE
+    // HTTP:   docker run -p ${plan.server.port}:${plan.server.port} -e MCP_TRANSPORT=http IMAGE
+    return `# ---- Build stage ----
+FROM node:22-alpine AS build
 WORKDIR /app
-
 COPY package.json tsconfig.json ./
 RUN npm install
-
 COPY src ./src
 COPY tests ./tests
-COPY .env.example ./.env.example
 COPY makemcp.manifest.json ./makemcp.manifest.json
-
 RUN npm run build
+RUN npm prune --omit=dev
 
+# ---- Runtime stage ----
+FROM node:22-alpine AS runtime
+WORKDIR /app
+ENV NODE_ENV=production
+COPY --from=build --chown=node:node /app/node_modules ./node_modules
+COPY --from=build --chown=node:node /app/dist ./dist
+COPY --from=build --chown=node:node /app/package.json ./package.json
+USER node
+ENV MCP_TRANSPORT=${plan.runtime.transport}
+ENV PORT=${plan.server.port}
 EXPOSE ${plan.server.port}
-CMD ["npm", "run", "start"]
+ENTRYPOINT ["node", "dist/src/index.js"]
 `;
 }
 
-function renderDockerCompose(plan: GenerationPlan): string {
-    const ports = plan.runtime.transport === "stdio"
-        ? ""
-        : `    ports:\n      - "${plan.server.port}:${plan.server.port}"\n`;
+// The registry `server.json` name is reverse-DNS + "/" + server id
+// (^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$). Default the namespace to the GitHub-verified
+// form (io.github.<owner>) since that is the simplest ownership path; owners edit
+// the placeholder owner before publishing.
+const SERVER_JSON_SCHEMA_URL = "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json";
 
-    return `services:
-  ${plan.server.name}:
-    build: .
-    env_file:
-      - .env
-${ports}    restart: unless-stopped
-`;
+function sanitizeServerId(name: string): string {
+    const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    return cleaned || "mcp-server";
 }
 
-function getSchemaType(schema?: Record<string, unknown>): string | undefined {
-    const type = schema?.type;
-    if (typeof type === "string") return type;
-    if (Array.isArray(type)) return type.find((entry): entry is string => typeof entry === "string");
-    return undefined;
+function toRegistryTransportType(plan: GenerationPlan): "stdio" | "streamable-http" | "sse" {
+    if (plan.runtime.transport === "http") return "streamable-http";
+    if (plan.runtime.transport === "sse") return "sse";
+    return "stdio";
 }
 
-function getNodeTestSampleValue(param: GenerationTool["params"][number]): unknown {
-    const schemaType = getSchemaType(param.schema);
+function buildServerJsonEnvironmentVariables(plan: GenerationPlan): Array<Record<string, unknown>> {
+    const variables: Array<Record<string, unknown>> = [
+        { name: "API_BASE_URL", description: "Base URL for upstream API requests.", isRequired: false, isSecret: false },
+    ];
 
-    if (param.schema?.format === "binary" || schemaType === "file") return "ZmlsZSBjb250ZW50";
-    if (schemaType === "array") return ["alpha", "beta"];
-    if (schemaType === "object") return { status: "open", owner: "team" };
-    if (schemaType === "integer" || schemaType === "number") return 42;
-    if (schemaType === "boolean") return true;
-
-    return `${param.argName}-value`;
-}
-
-function scalarToExpectedString(value: unknown): string {
-    if (value === null || value === undefined) return "";
-    if (typeof value === "string") return value;
-    if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") return String(value);
-    return JSON.stringify(value);
-}
-
-function expectedObjectEntries(value: unknown): [string, unknown][] {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-    return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
-}
-
-function expectedExplode(style: string, explode?: boolean): boolean {
-    return explode ?? style === "form";
-}
-
-function expectedSerializedParameterValue(
-    name: string,
-    value: unknown,
-    options: { location: string; style?: string; explode?: boolean }
-): string {
-    const style = options.style || (options.location === "path" || options.location === "header" ? "simple" : "form");
-    const explode = expectedExplode(style, options.explode);
-    const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
-
-    if (Array.isArray(value)) {
-        return value.map(scalarToExpectedString).join(delimiter);
+    for (const auth of collectAuthSchemes(plan)) {
+        if (auth.apiKeyEnvVar) variables.push({ name: auth.apiKeyEnvVar, description: "API key for the upstream API.", isRequired: false, isSecret: true });
+        if (auth.bearerTokenEnvVar) variables.push({ name: auth.bearerTokenEnvVar, description: "Bearer token for the upstream API.", isRequired: false, isSecret: true });
+        if (auth.basicUsernameEnvVar) variables.push({ name: auth.basicUsernameEnvVar, description: "Basic auth username for the upstream API.", isRequired: false, isSecret: false });
+        if (auth.basicPasswordEnvVar) variables.push({ name: auth.basicPasswordEnvVar, description: "Basic auth password for the upstream API.", isRequired: false, isSecret: true });
     }
 
-    const entries = expectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (explode) {
-            return entries.map(([key, entryValue]) => `${key}=${scalarToExpectedString(entryValue)}`).join(delimiter);
-        }
-        return entries.flatMap(([key, entryValue]) => [key, scalarToExpectedString(entryValue)]).join(delimiter);
+    if (plan.runtime.transport !== "stdio" && plan.mcpServerAuth.type === "bearer") {
+        variables.push({ name: plan.mcpServerAuth.tokenEnvVar, description: "Bearer token protecting MCP server access over HTTP/SSE.", isRequired: true, isSecret: true });
     }
 
-    return scalarToExpectedString(value);
+    return variables;
 }
 
-function expectedPathParameter(
-    name: string,
-    value: unknown,
-    options: { style?: string; explode?: boolean }
-): string {
-    const style = options.style || "simple";
-    const explode = expectedExplode(style, options.explode);
-    const encode = (entry: unknown) => encodeURIComponent(scalarToExpectedString(entry));
-    const encodedName = encodeURIComponent(name);
+// Emit a registry-ready server.json (npm/npx variant) per the MCP registry schema.
+// `identifier`, `version`, and the top-level `version` are kept in sync with the
+// package version; owners replace the placeholder namespace/repository before publishing.
+function renderServerJson(plan: GenerationPlan): string {
+    const serverId = sanitizeServerId(plan.server.name);
+    const description = (plan.spec.description?.trim() || `MCP server generated from ${plan.spec.title}.`).slice(0, 100);
 
-    if (Array.isArray(value)) {
-        const encodedValues = value.map(encode);
-        if (style === "label") return `.${encodedValues.join(".")}`;
-        if (style === "matrix") {
-            return explode
-                ? encodedValues.map((entry) => `;${encodedName}=${entry}`).join("")
-                : `;${encodedName}=${encodedValues.join(",")}`;
-        }
-        return encodedValues.join(",");
-    }
-
-    const entries = expectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (style === "label") {
-            const values = explode
-                ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
-                : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-            return `.${values.join(".")}`;
-        }
-        if (style === "matrix") {
-            if (explode) {
-                return entries.map(([key, entryValue]) => `;${encodeURIComponent(key)}=${encode(entryValue)}`).join("");
-            }
-            const values = entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-            return `;${encodedName}=${values.join(",")}`;
-        }
-        const values = explode
-            ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
-            : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-        return values.join(",");
-    }
-
-    const encodedValue = encode(value);
-    if (style === "label") return `.${encodedValue}`;
-    if (style === "matrix") return `;${encodedName}=${encodedValue}`;
-    return encodedValue;
-}
-
-function expectedQueryEntries(
-    name: string,
-    value: unknown,
-    options: { style?: string; explode?: boolean }
-): [string, string][] {
-    const style = options.style || "form";
-    const explode = expectedExplode(style, options.explode);
-
-    if (Array.isArray(value)) {
-        if (style === "form" && explode) {
-            return value.map((entry) => [name, scalarToExpectedString(entry)]);
-        }
-        return [[name, expectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
-    }
-
-    const entries = expectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (style === "deepObject") {
-            return entries.map(([key, entryValue]) => [`${name}[${key}]`, scalarToExpectedString(entryValue)]);
-        }
-        if (style === "form" && explode) {
-            return entries.map(([key, entryValue]) => [key, scalarToExpectedString(entryValue)]);
-        }
-        return [[name, expectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
-    }
-
-    return [[name, scalarToExpectedString(value)]];
-}
-
-function getNodeTestArgs(tool: GenerationTool): Record<string, unknown> {
-    return Object.fromEntries(tool.params.map((param) => [param.argName, getNodeTestSampleValue(param)]));
-}
-
-function getExpectedPath(tool: GenerationTool, args: Record<string, unknown>): string {
-    return tool.params
-        .filter((param) => param.location === "path")
-        .reduce((path, param) => {
-            const replacement = expectedPathParameter(param.sourceName, args[param.argName], {
-                style: param.style,
-                explode: param.explode,
-            });
-            return path.replace(`{${param.sourceName}}`, replacement);
-        }, tool.path);
-}
-
-function getExpectedQueryEntries(tool: GenerationTool, args: Record<string, unknown>): [string, string][] {
-    return tool.params
-        .filter((entry) => entry.location === "query")
-        .flatMap((param) => expectedQueryEntries(param.sourceName, args[param.argName], {
-            style: param.style,
-            explode: param.explode,
-        }));
-}
-
-function getExpectedJsonBody(tool: GenerationTool, args: Record<string, unknown>): unknown {
-    const requestBody = tool.requestBody;
-    if (!requestBody) return undefined;
-
-    if (requestBody.contentKind === "rawJsonObject" || requestBody.contentKind === "rawArray") {
-        return args[requestBody.params[0]?.argName || "body"];
-    }
-
-    return Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
+    return `${JSON.stringify({
+        $schema: SERVER_JSON_SCHEMA_URL,
+        name: `io.github.OWNER/${serverId}`,
+        description,
+        title: plan.spec.title,
+        repository: { url: "https://github.com/OWNER/REPO", source: "github" },
+        version: plan.server.version,
+        packages: [
+            {
+                registryType: "npm",
+                registryBaseUrl: "https://registry.npmjs.org",
+                identifier: plan.server.name,
+                version: plan.server.version,
+                runtimeHint: "npx",
+                transport: { type: toRegistryTransportType(plan) },
+                environmentVariables: buildServerJsonEnvironmentVariables(plan),
+            },
+        ],
+    }, null, 2)}\n`;
 }
 
 function renderNodeAuthEnvAssignments(plan: GenerationPlan): string {
@@ -794,8 +1246,50 @@ function renderNodeAuthEnvAssignments(plan: GenerationPlan): string {
     return assignments.join("\n");
 }
 
+function renderNodeMcpAccessBehaviorTest(plan: GenerationPlan): string {
+    if (plan.runtime.transport === "stdio") return "";
+
+    const allowedOrigin = plan.mcpServerAuth.allowedOrigins[0] || "https://client.example.test";
+    const allowedOrigins = JSON.stringify([allowedOrigin]);
+
+    return `
+test("MCP server access helpers enforce bearer tokens and allowed origins", () => {
+  assert.equal(isOriginAllowed(undefined, ${allowedOrigins}), true);
+  assert.equal(isOriginAllowed(${JSON.stringify(allowedOrigin)}, ${allowedOrigins}), true);
+  assert.equal(isOriginAllowed("https://evil.example.test", ${allowedOrigins}), false);
+  // Deny-by-default when no allow-list is configured: only localhost origins are accepted.
+  assert.equal(isOriginAllowed("https://evil.example.test", []), false);
+  assert.equal(isOriginAllowed("http://localhost:3000", []), true);
+  assert.equal(isOriginAllowed("http://127.0.0.1:8080", []), true);
+
+  assert.equal(isBearerAuthorized(undefined, ""), false);
+  assert.equal(isBearerAuthorized("Bearer secret", "secret"), true);
+  assert.equal(isBearerAuthorized(undefined, "secret"), false);
+  assert.equal(isBearerAuthorized("Bearer wrong", "secret"), false);
+
+  const writes: Array<{ statusCode: number; headers?: Record<string, string> }> = [];
+  const handled = handleMcpPreflight(
+    { method: "OPTIONS", headers: { origin: ${JSON.stringify(allowedOrigin)} } },
+    { writeHead: (statusCode: number, headers?: Record<string, string>) => writes.push({ statusCode, headers }), end: () => undefined }
+  );
+  assert.equal(handled, true);
+  assert.equal(writes[0].statusCode, 204);
+  assert.equal(writes[0].headers?.["Access-Control-Allow-Origin"], ${JSON.stringify(allowedOrigin)});
+
+  const deniedWrites: Array<{ statusCode: number; headers?: Record<string, string> }> = [];
+  const deniedHandled = handleMcpPreflight(
+    { method: "OPTIONS", headers: { origin: "https://evil.example.test" } },
+    { writeHead: (statusCode: number, headers?: Record<string, string>) => deniedWrites.push({ statusCode, headers }), end: () => undefined }
+  );
+  assert.equal(deniedHandled, true);
+  assert.equal(deniedWrites.length, 1);
+  assert.equal(deniedWrites[0].statusCode, 403);
+});
+`;
+}
+
 function renderNodeOperationBehaviorTest(tool: GenerationTool, index: number): string {
-    const args = getNodeTestArgs(tool);
+    const args = getTestArgs(tool);
     const expectedPath = getExpectedPath(tool, args);
     const expectedQueryEntries = getExpectedQueryEntries(tool, args);
     const headerParams = tool.params.filter((param) => param.location === "header");
@@ -879,6 +1373,7 @@ globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
 const { applyAuth, executeApiRequest } = await import("../src/api/client.js");
 const { appendSerializedParameter, serializePathParameter } = await import("../src/api/serialization.js");
 const { operations } = await import("../src/api/operations.js");
+${plan.runtime.transport === "stdio" ? "" : 'const { handleMcpPreflight, isBearerAuthorized, isOriginAllowed } = await import("../src/mcp/access.js");'}
 
 test.after(() => {
   globalThis.fetch = originalFetch;
@@ -945,18 +1440,22 @@ test("applyAuth injects headers, query parameters, and cookies", () => {
   assert.deepEqual(cookies, ["session=cookie-value"]);
 });
 
+${renderNodeMcpAccessBehaviorTest(plan)}
 ${plan.tools.map(renderNodeOperationBehaviorTest).join("\n\n")}
 `;
 }
 
 export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     const files = new Map<string, string>();
-    const manifest = buildManifest(plan);
+    const manifest = buildManifest(plan, "node");
 
     files.set("package.json", JSON.stringify({
         name: plan.server.name,
         version: plan.server.version,
         type: "module",
+        // Cross-check field for the MCP registry: must equal the server.json `name`,
+        // proving the published package and the registry entry share an owner.
+        mcpName: `io.github.OWNER/${sanitizeServerId(plan.server.name)}`,
         scripts: {
             build: "tsc",
             start: "node dist/src/index.js",
@@ -993,10 +1492,14 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     files.set("src/index.ts", renderIndex(plan));
     files.set("src/config.ts", renderConfig(plan));
     files.set("src/mcp/server.ts", renderServer(plan));
+    if (plan.runtime.transport !== "stdio") {
+        files.set("src/mcp/access.ts", renderMcpAccess());
+    }
     files.set("src/api/client.ts", renderClient());
     files.set("src/api/operations.ts", renderOperations(plan));
     files.set("src/api/serialization.ts", renderSerialization());
     files.set("makemcp.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {
         files.set("README.md", renderReadme(plan));

@@ -1,13 +1,16 @@
 import type {
+    ApiHttpMethod,
     ApiMediaType,
     ApiModel,
     ApiOperation,
     ApiParameter,
+    ApiResponse,
     ApiSecurityRequirement,
     ApiSecurityScheme,
 } from "@/lib/api-model";
 import type {
     ParamLocation,
+    ToolAnnotations,
     ToolAuthPlan,
     ToolAuthRequirementPlan,
     ToolAuthSchemePlan,
@@ -33,6 +36,66 @@ function getDescription(operation: ApiOperation): string {
     if (operation.description?.trim()) return operation.description.trim();
     if (operation.summary?.trim()) return operation.summary.trim();
     return `${operation.method} ${operation.path}`;
+}
+
+// Derive MCP tool annotations (MCP 2025-11-25) from HTTP method semantics.
+// These are advisory hints only. Verb -> annotation mapping:
+//   GET / HEAD          -> read-only, idempotent, not destructive
+//   PUT / DELETE        -> not read-only, idempotent, destructive
+//   PATCH               -> not read-only, not idempotent, destructive
+//   POST                -> not read-only, not idempotent, not destructive
+//   (other verbs)       -> conservative: not read-only, not idempotent, not destructive
+// openWorldHint is always true because generated tools call external HTTP APIs.
+export function deriveToolAnnotations(method: ApiHttpMethod, title?: string): ToolAnnotations {
+    const readOnly = method === "GET" || method === "HEAD";
+    const idempotent = method === "GET" || method === "HEAD" || method === "PUT" || method === "DELETE";
+    const destructive = method === "PUT" || method === "PATCH" || method === "DELETE";
+
+    return {
+        ...(title ? { title } : {}),
+        readOnlyHint: readOnly,
+        destructiveHint: destructive,
+        idempotentHint: idempotent,
+        openWorldHint: true,
+    };
+}
+
+// The MCP `title` is a human-friendly display name. Prefer the operation summary,
+// falling back to the operationId; leave undefined when neither is present.
+function getToolTitle(operation: ApiOperation): string | undefined {
+    if (operation.summary?.trim()) return operation.summary.trim();
+    if (operation.operationId?.trim()) return operation.operationId.trim();
+    return undefined;
+}
+
+// Pick the success (2xx) response, preferring 200/201, then the lowest 2xx code.
+function chooseSuccessResponse(operation: ApiOperation): ApiResponse | undefined {
+    const successes = operation.responses.filter((response) => /^2\d\d$/.test(response.statusCode));
+    if (successes.length === 0) return undefined;
+
+    return successes.find((response) => response.statusCode === "200")
+        || successes.find((response) => response.statusCode === "201")
+        || successes.slice().sort((a, b) => a.statusCode.localeCompare(b.statusCode))[0];
+}
+
+// Choose the primary media type for a response body, preferring JSON. Mirrors
+// chooseRequestMedia's preference order for consistency.
+function chooseResponseMedia(response: ApiResponse | undefined): ApiMediaType | undefined {
+    const content = response?.content || [];
+    if (content.length === 0) return undefined;
+
+    return content.find((media) => media.mediaType === "application/json")
+        || content.find((media) => media.mediaType.includes("+json"))
+        || content[0];
+}
+
+// Derive an MCP structured-output schema from the success response schema.
+// Only available on the canonical (apiModel) path. Returns undefined when there
+// is no usable 2xx response schema.
+function deriveOutputSchema(operation: ApiOperation): Record<string, unknown> | undefined {
+    const media = chooseResponseMedia(chooseSuccessResponse(operation));
+    if (!media?.schema || Object.keys(media.schema).length === 0) return undefined;
+    return media.schema;
 }
 
 function chooseRequestMedia(operation: ApiOperation): ApiMediaType | undefined {
@@ -359,13 +422,18 @@ export function planToolFromOperation(
 
     pushRequestBodyReviewFlags(requestBodyStrategy, manualReview);
 
+    const title = getToolTitle(operation);
+
     return {
         id: operation.id,
         operationId: operation.operationId,
         method: operation.method,
         path: operation.path,
         toolName,
+        title,
         inputSchema: buildInputSchema(parameters),
+        outputSchema: deriveOutputSchema(operation),
+        annotations: deriveToolAnnotations(operation.method, title),
         description: options.description?.trim() || getDescription(operation),
         authStrategy: buildAuthPlan(operation, apiModel, warnings, manualReview),
         requestBodyStrategy,

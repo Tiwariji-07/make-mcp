@@ -80,6 +80,14 @@ export function validateGenerationPlan(plan: GenerationPlan): ValidationResult {
         pushIssue(errors, "error", "API key auth requires a parameter name", "auth.apiKeyName");
     }
 
+    if (plan.runtime.transport !== "stdio" && plan.mcpServerAuth.type === "none") {
+        pushIssue(warnings, "warning", "HTTP/SSE MCP server access has no bearer token configured. Bind to localhost, or select bearer auth and set MCP_AUTH_TOKEN before exposing this server.", "mcpServerAuth.type");
+    }
+
+    if (plan.runtime.transport !== "stdio" && plan.server.host === "0.0.0.0" && plan.mcpServerAuth.type === "none") {
+        pushIssue(warnings, "warning", "Server host is 0.0.0.0 and MCP server access auth is none. This can expose the MCP server to the network.", "server.host");
+    }
+
     if (!plan.features.documentation) {
         pushIssue(info, "info", "README generation disabled", "features.documentation");
     }

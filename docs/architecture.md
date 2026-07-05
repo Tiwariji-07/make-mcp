@@ -100,10 +100,34 @@ The project plan describes the generated app:
 - File layout.
 - Scripts.
 - Documentation, Docker, test, and verification options.
+- Compact mode (meta-tools) — see below.
 - Manifest metadata.
 
 This layer should be language-neutral where possible, with Node.js and Python
 targets consuming the same tool and project plans.
+
+**Compact mode (meta-tools).** `GenerationPlan.runtime.compactMode` is a
+project-plan option (default `false`). When it is false, targets emit exactly
+one MCP tool per entry in `plan.tools` — output is byte-identical to the
+non-compact behavior, so targets that ignore the flag stay correct. When it is
+true, a target must NOT register one tool per operation; instead it registers
+exactly three meta-tools built from the same (never trimmed) `plan.tools` list:
+
+- `list_api_endpoints` — browse/search the catalog; returns lightweight records
+  (id, method, path, summary, tags) with a cursor, never schemas.
+- `get_api_endpoint_schema` — fetch one operation's full contract on demand.
+- `invoke_api_endpoint` — actually call one operation.
+
+This keeps the model's context cost constant regardless of API size (only the
+three meta-tools are ever exposed). The **safe-dispatch** contract is
+security-critical: build an immutable registry keyed by tool id; refuse unknown
+ids and make no HTTP call; validate arguments against the stored schema BEFORE
+any network I/O; build the request from the operation's stored method + path
+template (never a model-supplied URL, never `eval`); and apply auth server-side
+from config/env so the model never supplies secrets. The full contract lives on
+`GenerationPlan.runtime.compactMode` in `types.ts`; both the Node and Python
+targets implement it (`renderCompactServer`), dispatching through the same
+per-operation request functions used in non-compact mode.
 
 ### 5. Generated App
 
@@ -135,6 +159,33 @@ src/
 Tool registration should stay thin. Request construction, auth application, and
 serialization should live in generated helpers so behavior can be tested once
 instead of being inlined in every tool.
+
+Generated servers target the MCP 2025-11-25 spec. Targets emit:
+
+- Tool annotations (`readOnlyHint` / `destructiveHint` / `idempotentHint` /
+  `openWorldHint`) derived from the operation's HTTP verb — advisory hints only,
+  never a security boundary.
+- `outputSchema` plus `structuredContent` when a response schema is available
+  (object schemas pass through; other shapes are wrapped under `result`).
+- `isError` tool results for upstream/HTTP failures, so the model can
+  self-correct instead of the transport failing.
+- stderr-only logging, keeping the stdio JSON-RPC stream on stdout clean.
+- A registry-ready `server.json` (npm for Node, PyPI for Python), a multi-stage
+  `Dockerfile`, and deploy buttons.
+- For HTTP/SSE transports, an access layer enforcing optional bearer auth
+  (constant-time compare) and deny-by-default Origin checks, in both targets.
+
+### Client-side vs. server-side generation
+
+The generator's plan/validate/target/zip stages are pure and run in the browser
+by default (`src/lib/client-generate.ts`): it imports only the pure pieces
+(`normalize`, `validate`, `request`, `targets/*`) and zips the in-memory file
+map with `fflate`, so the spec never leaves the page. The Node-only modules —
+`archive.ts` (`archiver`) and `verify.ts` (`node:fs` / `child_process`) — are
+deliberately excluded from that import graph so they never reach the client
+bundle. Server-side generation (`src/app/api/generate/route.ts`) exists for the
+one thing the browser cannot do: full verification (install + build/import + run
+generated tests).
 
 ### 6. Verification
 
@@ -174,7 +225,17 @@ run in CI and can be offered as a stricter export option.
 
 ## Migration Direction
 
-The current implementation already has a generator pipeline, but it passes a
-simplified UI-oriented `ToolConfig` into generation. Future fixes should move
-toward the architecture above by introducing the canonical API model first, then
-changing the planner and targets to consume it.
+The canonical API model and the tool plan now exist and are used: the pipeline
+above is the real generation path, not just the target. Both the Node and Python
+targets consume the same `GenerationPlan` (built from the canonical model via the
+planner) rather than reading UI state directly.
+
+What is still pending:
+
+- The legacy UI-oriented config path still exists as a fallback and is slated for
+  removal. Until then, some inputs can still reach generation through the
+  simplified `ToolConfig` shape rather than the canonical model, and the two
+  paths should be reconciled onto the canonical model as the single source of
+  truth.
+- Full verification remains server-only and gated behind
+  `MAKEMCP_ALLOW_FULL_VERIFY`; the browser path runs fast/shape validation only.

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Upload,
@@ -12,13 +12,19 @@ import {
   ChevronUp,
   Loader2,
   X,
+  Sparkles,
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { useProjectStore } from "@/store/project-store";
-import { parseOpenAPIFromContent, parseOpenAPIFromURL } from "@/lib/parsers/openapi";
+import { useProjectStore, type ParsedSpec } from "@/store/project-store";
+import {
+  parseOpenAPIFromContent,
+  parseOpenAPIFromURL,
+  buildValidationSummary,
+  stashValidationSummary,
+} from "@/lib/parsers/openapi";
 import { useDropzone } from "react-dropzone";
 
 type ImportTab = "file" | "url" | "paste";
@@ -26,7 +32,6 @@ type ImportTab = "file" | "url" | "paste";
 export default function ImportPage() {
   const router = useRouter();
   const {
-    spec,
     setSpec,
     setCurrentStep,
     setLoading,
@@ -43,14 +48,36 @@ export default function ImportPage() {
   const [isUrlFetching, setIsUrlFetching] = useState(false);
   const [isFileParsing, setIsFileParsing] = useState(false);
   const [isPasteParsing, setIsPasteParsing] = useState(false);
+  const [isSampleLoading, setIsSampleLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
 
-  useEffect(() => {
-    if (spec) {
-      setCurrentStep("editor");
-      router.push("/editor");
+  // Shared post-parse step for EVERY import path (file / url / paste / sample):
+  // run validateSpec() via buildValidationSummary(), stash the concise summary
+  // for the editor banner, commit the spec to the store, and advance.
+  const finishImport = (parsedSpec: ParsedSpec, source: string, label?: string) => {
+    const summary = buildValidationSummary(parsedSpec, label);
+    stashValidationSummary(summary);
+    setSpec(parsedSpec, source);
+    setCurrentStep("editor");
+    router.push("/editor");
+  };
+
+  const handleTrySample = async () => {
+    setIsSampleLoading(true);
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch("/samples/petstore.json");
+      if (!res.ok) throw new Error("Could not load the sample spec");
+      const content = await res.text();
+      const parsedSpec = await parseOpenAPIFromContent(content, "petstore.json");
+      finishImport(parsedSpec, "Petstore (sample)", "Petstore (sample)");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load sample");
+      setIsSampleLoading(false);
+      setLoading(false);
     }
-  }, [spec, setCurrentStep, router]);
+  };
 
   const onDrop = async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
@@ -61,10 +88,9 @@ export default function ImportPage() {
     try {
       const content = await file.text();
       const parsedSpec = await parseOpenAPIFromContent(content, file.name);
-      setSpec(parsedSpec, file.name);
+      finishImport(parsedSpec, file.name);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse file");
-    } finally {
       setLoading(false);
       setIsFileParsing(false);
     }
@@ -75,6 +101,8 @@ export default function ImportPage() {
     accept: {
       "application/json": [".json"],
       "application/x-yaml": [".yaml", ".yml"],
+      "text/yaml": [".yaml", ".yml"],
+      "text/x-yaml": [".yaml", ".yml"],
     },
     maxFiles: 1,
     noClick: false,
@@ -87,10 +115,9 @@ export default function ImportPage() {
     setError(null);
     try {
       const parsedSpec = await parseOpenAPIFromURL(specUrl);
-      setSpec(parsedSpec, specUrl);
+      finishImport(parsedSpec, specUrl);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to fetch spec");
-    } finally {
       setIsUrlFetching(false);
       setLoading(false);
     }
@@ -103,10 +130,9 @@ export default function ImportPage() {
     setError(null);
     try {
       const parsedSpec = await parseOpenAPIFromContent(pastedContent, "pasted-spec");
-      setSpec(parsedSpec, "Pasted Content");
+      finishImport(parsedSpec, "Pasted Content");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to parse content");
-    } finally {
       setIsPasteParsing(false);
       setLoading(false);
     }
@@ -243,12 +269,31 @@ export default function ImportPage() {
                     <p className="text-sm text-muted-foreground max-w-md mx-auto">
                       Swagger 2.0+ / OpenAPI 3.x / Postman v2.1 — JSON or YAML
                     </p>
-                    <Button
-                      variant="outline"
-                      className="border-border hover:border-primary/40 hover:text-primary"
-                    >
-                      Or select file
-                    </Button>
+                    <div className="flex items-center justify-center gap-3">
+                      <Button
+                        variant="outline"
+                        className="border-border hover:border-primary/40 hover:text-primary"
+                      >
+                        Or select file
+                      </Button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          // Don't let the click bubble to the dropzone root (which opens the file picker).
+                          e.stopPropagation();
+                          handleTrySample();
+                        }}
+                        disabled={isSampleLoading}
+                        className="inline-flex items-center gap-2 px-4 h-9 text-xs tracking-wider text-muted-foreground hover:text-primary border border-transparent hover:border-primary/30 transition-colors disabled:opacity-60"
+                      >
+                        {isSampleLoading ? (
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                        ) : (
+                          <Sparkles className="w-3.5 h-3.5" />
+                        )}
+                        Try a sample API
+                      </button>
+                    </div>
                   </>
                 )}
               </div>
@@ -286,7 +331,8 @@ export default function ImportPage() {
                   </Button>
                 </div>
                 <p className="text-[11px] text-muted-foreground tracking-wider">
-                  Press <kbd className="px-1.5 py-0.5 border border-border bg-background text-[10px]">Enter</kbd> to import
+                  OpenAPI, Swagger or Postman — fetched securely server-side to avoid CORS.
+                  Press <kbd className="px-1.5 py-0.5 border border-border bg-background text-[10px]">Enter</kbd> to import.
                 </p>
               </div>
             </div>

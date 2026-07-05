@@ -1,5 +1,4 @@
 import type {
-    GeneratedManifest,
     GeneratedProject,
     GenerationPlan,
     GenerationRequestBody,
@@ -7,48 +6,27 @@ import type {
     ToolAuthRequirementPlan,
 } from "../types.ts";
 import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
-import { getPythonTransportRunLine } from "../strategies/transport.ts";
+import { getPythonTransportRunLine, pythonNeedsHttpServer, LOCALHOST_ORIGIN_HOSTS } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
 import { FASTMCP_VERSION } from "../runtime-versions.ts";
 import { toPythonStringLiteral } from "../utils.ts";
 import { toPythonType } from "../schema.ts";
+import {
+    buildManifest,
+    expectedSerializedParameterValue,
+    getEnvExample,
+    getExpectedJsonBody,
+    getExpectedPath,
+    getExpectedQueryEntries,
+    getTestArgs,
+    renderDockerCompose,
+    scalarToExpectedString,
+} from "./shared.ts";
 
 function renderPythonSerializationOptions(param: GenerationTool["params"][number]): string {
     const style = param.style === undefined ? "None" : JSON.stringify(param.style);
     const explode = param.explode === undefined ? "None" : param.explode ? "True" : "False";
     return `{ "location": ${JSON.stringify(param.location)}, "style": ${style}, "explode": ${explode} }`;
-}
-
-function buildManifest(plan: GenerationPlan): GeneratedManifest {
-    return {
-        generatorVersion: plan.generatorVersion,
-        contractVersion: plan.contractVersion,
-        language: "python",
-        framework: plan.runtime.framework,
-        features: plan.features,
-        transport: plan.runtime.transport,
-        serverName: plan.server.name,
-        generatedAt: plan.generatedAt,
-        toolCount: plan.tools.length,
-    };
-}
-
-function getEnvExample(plan: GenerationPlan): string {
-    const authSchemes = collectAuthSchemes(plan);
-    const lines = [`# Base URL for the API`, `API_BASE_URL=${plan.spec.baseUrl || "https://api.example.com"}`];
-
-    if (authSchemes.length > 0) {
-        lines.push("", "# Auth");
-    }
-
-    for (const auth of authSchemes) {
-        if (auth.apiKeyEnvVar) lines.push(`${auth.apiKeyEnvVar}=your_api_key_here`);
-        if (auth.bearerTokenEnvVar) lines.push(`${auth.bearerTokenEnvVar}=your_token_here`);
-        if (auth.basicUsernameEnvVar) lines.push(`${auth.basicUsernameEnvVar}=your_username`);
-        if (auth.basicPasswordEnvVar) lines.push(`${auth.basicPasswordEnvVar}=your_password`);
-    }
-
-    return `${lines.join("\n")}\n`;
 }
 
 function getPythonBodyExpression(requestBody: GenerationRequestBody): string {
@@ -221,20 +199,488 @@ ${cookieLines ? `${cookieLines}\n` : ""}${bodyRender.setup ? `${bodyRender.setup
 `;
 }
 
+function isObjectSchemaWithProperties(schema?: Record<string, unknown>): boolean {
+    return Boolean(
+        schema &&
+        schema.type === "object" &&
+        schema.properties &&
+        typeof schema.properties === "object" &&
+        !Array.isArray(schema.properties) &&
+        Object.keys(schema.properties as Record<string, unknown>).length > 0
+    );
+}
+
+// Render an arbitrary JSON value as a Python literal (dict / list / str / bool / None).
+// Used to embed a JSON Schema object as the `output_schema=` argument.
+function toPythonJsonLiteral(value: unknown): string {
+    if (value === null || value === undefined) return "None";
+    if (typeof value === "string") return JSON.stringify(value);
+    if (typeof value === "number") return String(value);
+    if (typeof value === "boolean") return value ? "True" : "False";
+    if (Array.isArray(value)) return `[${value.map(toPythonJsonLiteral).join(", ")}]`;
+    if (typeof value === "object") {
+        const entries = Object.entries(value as Record<string, unknown>)
+            .map(([key, entryValue]) => `${JSON.stringify(key)}: ${toPythonJsonLiteral(entryValue)}`);
+        return `{${entries.join(", ")}}`;
+    }
+    return JSON.stringify(String(value));
+}
+
+// Build the MCP output schema (a JSON Schema object) emitted as FastMCP's
+// `output_schema=`. MCP output schemas must be object shapes: object schemas with
+// named properties pass through unchanged; any other shape (array, primitive,
+// unconstrained object) is wrapped under a single `result` property to match the
+// wrapped structured content the handler returns. Returns undefined when there is
+// no usable output schema.
+function buildPythonOutputSchema(outputSchema?: Record<string, unknown>): { literal: string; wrapsResult: boolean } | undefined {
+    if (!outputSchema || Object.keys(outputSchema).length === 0) return undefined;
+
+    if (isObjectSchemaWithProperties(outputSchema)) {
+        return { literal: toPythonJsonLiteral(outputSchema), wrapsResult: false };
+    }
+
+    return {
+        literal: toPythonJsonLiteral({
+            type: "object",
+            properties: { result: outputSchema },
+            required: ["result"],
+        }),
+        wrapsResult: true,
+    };
+}
+
+// Render FastMCP `ToolAnnotations(...)` keyword arguments (MCP 2025-11-25). Behavioral
+// hints derived from HTTP method semantics; advisory only. Returns undefined when no
+// annotations are present.
+function renderPythonAnnotations(annotations?: GenerationTool["annotations"]): string | undefined {
+    if (!annotations) return undefined;
+
+    const entries: string[] = [];
+    if (annotations.title) entries.push(`title=${toPythonStringLiteral(annotations.title)}`);
+    if (annotations.readOnlyHint !== undefined) entries.push(`readOnlyHint=${annotations.readOnlyHint ? "True" : "False"}`);
+    if (annotations.destructiveHint !== undefined) entries.push(`destructiveHint=${annotations.destructiveHint ? "True" : "False"}`);
+    if (annotations.idempotentHint !== undefined) entries.push(`idempotentHint=${annotations.idempotentHint ? "True" : "False"}`);
+    if (annotations.openWorldHint !== undefined) entries.push(`openWorldHint=${annotations.openWorldHint ? "True" : "False"}`);
+
+    if (entries.length === 0) return undefined;
+    return `ToolAnnotations(${entries.join(", ")})`;
+}
+
 function renderPythonServerTool(tool: GenerationTool): string {
     const signature = getPythonSignatureParams(tool)
         .map((param) => `${param.argName}: ${toPythonType(param.type)}${param.required ? "" : " | None = None"}`)
         .join(", ");
     const args = getPythonSignatureParams(tool).map((param) => param.argName).join(", ");
 
-    return `@mcp.tool(name=${toPythonStringLiteral(tool.displayName)})
+    const output = buildPythonOutputSchema(tool.outputSchema);
+    const annotations = renderPythonAnnotations(tool.annotations);
+
+    const decoratorArgs = [`name=${toPythonStringLiteral(tool.displayName)}`];
+    if (annotations) decoratorArgs.push(`annotations=${annotations}`);
+    if (output) decoratorArgs.push(`output_schema=${output.literal}`);
+
+    // With an output_schema, FastMCP builds structured content from the returned dict.
+    // Wrap non-object payloads under `result` to match the wrapped output shape.
+    const returnExpression = output && output.wrapsResult
+        ? `{"result": ${tool.functionName}_operation(${args})}`
+        : `${tool.functionName}_operation(${args})`;
+
+    return `@mcp.tool(${decoratorArgs.join(", ")})
 def ${tool.functionName}(${signature}) -> dict:
-    """${tool.description.replace(/"""/g, "'''")}"""
-    return ${tool.functionName}_operation(${args})
+    ${toPythonStringLiteral(tool.description)}
+    return ${returnExpression}
+`;
+}
+
+// ---------------------------------------------------------------------------
+// COMPACT MODE (meta-tools) — Python / FastMCP target
+//
+// When `plan.runtime.compactMode` is true the server registers exactly three
+// meta-tools (list/get/invoke) instead of one @mcp.tool per operation. All three
+// read from a single immutable in-memory registry (`META_OPERATIONS`) built from
+// `plan.tools`, keyed by tool id. `invoke_api_endpoint` dispatches through the
+// SAME per-operation request functions (`<fn>_operation`) used in non-compact
+// mode, so request building / auth is never reinvented. Mirrors the Node target's
+// `renderCompactServer`. See the DESIGN CONTRACT on
+// GenerationPlan.runtime.compactMode in types.ts.
+// ---------------------------------------------------------------------------
+
+// Lightweight, secret-free auth descriptor for get_api_endpoint_schema output.
+// Mirrors the Node target's renderCompactAuthDescriptor (never emits secrets).
+function renderPythonCompactAuthDescriptor(tool: GenerationTool): string {
+    const requirements = tool.authStrategy.requirements;
+    if (!requirements?.length) return "[]";
+    const schemes = new Map<string, string>();
+    for (const requirement of requirements) {
+        for (const scheme of requirement.schemes) {
+            const entry: Record<string, unknown> = { type: scheme.strategy, name: scheme.schemeName };
+            if (scheme.apiKeyName) entry.apiKeyName = scheme.apiKeyName;
+            if (scheme.apiKeyLocation) entry.in = scheme.apiKeyLocation;
+            schemes.set(`${scheme.strategy}:${scheme.schemeName}`, toPythonJsonLiteral(entry));
+        }
+    }
+    return `[${[...schemes.values()].join(", ")}]`;
+}
+
+// One immutable registry entry. `parameters` describes how the model-supplied
+// { path, query, header, body } object maps back onto the flat args the stored
+// operation function expects; `invoke` is the stored per-operation request
+// function reference (dispatch never rebuilds a URL). Mirrors the Node target's
+// renderCompactRegistryEntry.
+function renderPythonCompactRegistryEntry(tool: GenerationTool): string {
+    const parameterDescriptors = tool.params
+        .map((param) => `            {"name": ${JSON.stringify(param.argName)}, "in": ${JSON.stringify(param.location)}, "required": ${param.required ? "True" : "False"}, "schema": ${toPythonJsonLiteral(param.schema ?? {})}}`)
+        .join(",\n");
+
+    const bodyParamNames = tool.requestBody?.params.map((param) => param.argName) ?? [];
+
+    const entries: string[] = [
+        `        "id": ${JSON.stringify(tool.id)}`,
+        `        "method": ${JSON.stringify(tool.method)}`,
+        `        "path": ${JSON.stringify(tool.path)}`,
+        `        "summary": ${toPythonStringLiteral((tool.title || tool.description || "").slice(0, 120))}`,
+        `        "description": ${toPythonStringLiteral(tool.description)}`,
+        `        "tags": []`,
+        `        "parameters": [\n${parameterDescriptors ? `${parameterDescriptors}\n        ` : ""}]`,
+        `        "body_content_kind": ${tool.requestBody ? JSON.stringify(tool.requestBody.contentKind) : "None"}`,
+        `        "body_param_names": ${toPythonJsonLiteral(bodyParamNames)}`,
+        `        "request_body": ${tool.requestBody?.schema ? toPythonJsonLiteral(tool.requestBody.schema) : "None"}`,
+        `        "output_schema": ${tool.outputSchema && Object.keys(tool.outputSchema).length > 0 ? toPythonJsonLiteral(tool.outputSchema) : "None"}`,
+        `        "auth": ${renderPythonCompactAuthDescriptor(tool)}`,
+        `        "invoke": ${tool.functionName}_operation`,
+    ];
+
+    return `    {\n${entries.join(",\n")}\n    }`;
+}
+
+function renderCompactServer(plan: GenerationPlan): string {
+    const runLine = getPythonTransportRunLine(plan);
+    const operationImports = plan.tools
+        .map((tool) => `    ${tool.functionName}_operation,`)
+        .join("\n");
+    const registryEntries = plan.tools.map(renderPythonCompactRegistryEntry).join(",\n");
+
+    // The registry is the single source of truth. The id space is CLOSED:
+    // invoke can only ever reach a real, generated operation. Tuple + MappingProxyType
+    // make the registry effectively immutable at runtime (no eval, stored templates only).
+    return `"""${plan.server.name} - MCP server generated by MakeMCP ${plan.generatorVersion}"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import json
+import logging
+import sys
+from types import MappingProxyType
+
+from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from config import MCP_SERVER_CONFIG
+from operations import (
+${operationImports}
+)
+
+
+# On the stdio transport, stdout carries the JSON-RPC stream, so operator diagnostics
+# must never be written to stdout (a stray print corrupts the protocol). Route the
+# standard logging module to stderr; the generated server emits no bare print() calls.
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
+
+mcp = FastMCP(MCP_SERVER_CONFIG["name"])
+
+# Maximum characters of upstream response returned in a single invoke envelope.
+# Bounds the context cost of one call regardless of API payload size.
+MAX_INVOKE_RESULT_CHARS = 100_000
+
+# HTTP methods accepted by list_api_endpoints' method filter.
+HTTP_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
+# Immutable operation registry — the single source of truth for all three
+# meta-tools. Each entry's "invoke" is the stored per-operation request function,
+# so dispatch never rebuilds a URL or evals a model-supplied string.
+META_OPERATIONS = (
+${registryEntries},
+)
+
+# id -> operation lookup. The id space is CLOSED: invoke can only ever reach a
+# real, generated operation.
+META_OPERATIONS_BY_ID = MappingProxyType({operation["id"]: operation for operation in META_OPERATIONS})
+
+
+def _encode_cursor(offset: int) -> str:
+    return base64.b64encode(str(offset).encode("utf-8")).decode("utf-8")
+
+
+def _decode_cursor(cursor: str | None) -> int:
+    if not cursor:
+        return 0
+    try:
+        parsed = int(base64.b64decode(cursor.encode("utf-8")).decode("utf-8"))
+    except (ValueError, binascii.Error):
+        return 0
+    return parsed if parsed >= 0 else 0
+
+
+def _as_object(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+# Validate the supplied arguments against the stored parameter descriptors BEFORE
+# any network I/O. Rejects unknown params, missing-required params, and gross
+# type mismatches. Mirrors the intent of the Node target's compiled Zod validator.
+def _validate_operation_args(operation: dict, args: dict) -> list[dict]:
+    issues: list[dict] = []
+    descriptors = [param for param in operation["parameters"] if param["in"] != "body"]
+    allowed = {param["name"] for param in descriptors}
+    allowed.update(operation["body_param_names"])
+
+    for name in args:
+        if name not in allowed:
+            issues.append({"field": name, "message": "Unknown parameter."})
+
+    for param in descriptors:
+        name = param["name"]
+        if param["required"] and args.get(name) is None:
+            issues.append({"field": name, "message": "Missing required parameter."})
+            continue
+        if name in args and args[name] is not None and not _value_matches_schema_type(args[name], param["schema"]):
+            issues.append({"field": name, "message": "Type mismatch for parameter."})
+
+    return issues
+
+
+def _value_matches_schema_type(value: object, schema: dict) -> bool:
+    expected = schema.get("type") if isinstance(schema, dict) else None
+    if not expected:
+        return True
+    if expected == "string":
+        return isinstance(value, str)
+    if expected == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if expected == "number":
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if expected == "boolean":
+        return isinstance(value, bool)
+    if expected == "array":
+        return isinstance(value, list)
+    if expected == "object":
+        return isinstance(value, dict)
+    return True
+
+
+# Flatten the model-supplied {path, query, header, body} object onto the flat,
+# argName-keyed args dict the stored operation function expects. Values are read
+# strictly by the registry's parameter descriptors — never from arbitrary keys —
+# so the model cannot smuggle in unknown parameters. Mirrors Node's toOperationArgs.
+def _to_operation_args(operation: dict, parameters: dict | None) -> dict:
+    parameters = parameters or {}
+    args: dict = {}
+    buckets = {
+        "path": _as_object(parameters.get("path")),
+        "query": _as_object(parameters.get("query")),
+        "header": _as_object(parameters.get("header")),
+        "cookie": _as_object(parameters.get("cookie")),
+    }
+
+    for param in operation["parameters"]:
+        location = param["in"]
+        if location == "body":
+            continue
+        bucket = buckets.get(location)
+        if bucket is not None and param["name"] in bucket:
+            args[param["name"]] = bucket[param["name"]]
+
+    # Request body. A single raw body param takes the whole body; a flattened
+    # object body maps each named field out of the body object by argName.
+    body = parameters.get("body")
+    kind = operation["body_content_kind"]
+    body_param_names = operation["body_param_names"]
+    if kind in ("rawJsonObject", "rawArray", "text", "binary"):
+        if body_param_names:
+            args[body_param_names[0]] = body
+    elif body_param_names:
+        body_object = _as_object(body)
+        for name in body_param_names:
+            if name in body_object:
+                args[name] = body_object[name]
+
+    return args
+
+
+def _bounded_result(text: str) -> tuple[object, bool]:
+    truncated = len(text) > MAX_INVOKE_RESULT_CHARS
+    bounded = text[:MAX_INVOKE_RESULT_CHARS] if truncated else text
+    try:
+        return json.loads(bounded), truncated
+    except (ValueError, TypeError):
+        return bounded, truncated
+
+
+@mcp.tool(
+    name="list_api_endpoints",
+    annotations=ToolAnnotations(
+        title="List API Endpoints",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def list_api_endpoints(
+    search: str | None = None,
+    tag: str | None = None,
+    method: str | None = None,
+    limit: int | None = None,
+    cursor: str | None = None,
+) -> dict:
+    "Search and list available API operations. Returns lightweight records (id, method, path, summary, tags) - NOT full parameter schemas. Call get_api_endpoint_schema before invoking."
+    search_term = search.strip().lower() if search else None
+    tag_term = tag.strip().lower() if tag else None
+    method_term = method.upper() if method else None
+    page_limit = max(1, min(100, limit)) if limit is not None else 50
+    offset = _decode_cursor(cursor)
+
+    matches = []
+    for operation in META_OPERATIONS:
+        if method_term and operation["method"] != method_term:
+            continue
+        if tag_term and not any(entry.lower() == tag_term for entry in operation["tags"]):
+            continue
+        if search_term:
+            haystack = " ".join([
+                operation["id"],
+                operation["method"],
+                operation["path"],
+                operation["summary"],
+                operation["description"],
+                " ".join(operation["tags"]),
+            ]).lower()
+            if search_term not in haystack:
+                continue
+        matches.append(operation)
+
+    page = matches[offset:offset + page_limit]
+    next_offset = offset + len(page)
+    result: dict = {
+        "endpoints": [
+            {
+                "id": operation["id"],
+                "method": operation["method"],
+                "path": operation["path"],
+                "summary": operation["summary"],
+                "tags": operation["tags"],
+            }
+            for operation in page
+        ],
+        "total_estimate": len(matches),
+    }
+    if next_offset < len(matches):
+        result["next_cursor"] = _encode_cursor(next_offset)
+    return result
+
+
+@mcp.tool(
+    name="get_api_endpoint_schema",
+    annotations=ToolAnnotations(
+        title="Get API Endpoint Schema",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    ),
+)
+def get_api_endpoint_schema(endpointId: str) -> dict:
+    "Get the full input (parameters + request body) and output schema, plus description, for one operation by id. Call after list_api_endpoints and before invoke_api_endpoint."
+    operation = META_OPERATIONS_BY_ID.get(endpointId)
+    if operation is None:
+        return {"error": {"type": "unknown_operation", "message": f"Unknown endpoint id: {endpointId}"}}
+
+    return {
+        "id": operation["id"],
+        "method": operation["method"],
+        "path": operation["path"],
+        "summary": operation["summary"],
+        "description": operation["description"],
+        "parameters": [
+            {
+                "name": param["name"],
+                "in": param["in"],
+                "required": param["required"],
+                "schema": param["schema"],
+            }
+            for param in operation["parameters"]
+            if param["in"] != "body"
+        ],
+        "requestBody": operation["request_body"],
+        "outputSchema": operation["output_schema"],
+        "auth": operation["auth"],
+    }
+
+
+@mcp.tool(
+    name="invoke_api_endpoint",
+    annotations=ToolAnnotations(
+        title="Invoke API Endpoint",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+def invoke_api_endpoint(endpointId: str, parameters: dict | None = None) -> dict:
+    "Invoke one operation by id. Arguments are validated against that operation's schema before any request is made."
+    # (a) Closed registry - refuse unknown ids and make NO HTTP call.
+    operation = META_OPERATIONS_BY_ID.get(endpointId)
+    if operation is None:
+        return {
+            "ok": False,
+            "endpointId": endpointId,
+            "error": {"type": "unknown_operation", "message": f"Unknown endpoint id: {endpointId}"},
+        }
+
+    # Map the {path, query, header, body} object onto flat operation args by the
+    # registry's parameter descriptors (never arbitrary model keys).
+    operation_args = _to_operation_args(operation, parameters)
+
+    # (b) Validate BEFORE any network I/O against the stored operation schema.
+    issues = _validate_operation_args(operation, operation_args)
+    if issues:
+        return {
+            "ok": False,
+            "endpointId": operation["id"],
+            "error": {"type": "validation_error", "message": "Arguments failed schema validation.", "details": issues},
+        }
+
+    # (c) Dispatch through the stored per-operation request function, which builds
+    # the request from the operation's method + path template and (d) applies auth
+    # server-side from config/env. The model never supplies a URL or secret.
+    try:
+        response = operation["invoke"](**operation_args)
+        text = json.dumps(response) if not isinstance(response, str) else response
+        data, truncated = _bounded_result(text)
+        envelope: dict = {"ok": True, "status": 200, "endpointId": operation["id"], "data": data}
+        if truncated:
+            envelope["truncated"] = True
+        return envelope
+    except Exception as error:  # noqa: BLE001 - surface upstream failures in the envelope
+        return {
+            "ok": False,
+            "endpointId": operation["id"],
+            "error": {"type": "http_error", "message": str(error)},
+        }
+
+
+if __name__ == "__main__":
+${runLine}
 `;
 }
 
 function renderServer(plan: GenerationPlan): string {
+    if (plan.runtime.compactMode) {
+        return renderCompactServer(plan);
+    }
+
     const runLine = getPythonTransportRunLine(plan);
     const operationImports = plan.tools
         .map((tool) => `    ${tool.functionName}_operation,`)
@@ -244,12 +690,21 @@ function renderServer(plan: GenerationPlan): string {
 
 from __future__ import annotations
 
+import logging
+import sys
+
 from fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from config import MCP_SERVER_CONFIG
 from operations import (
 ${operationImports}
 )
 
+
+# On the stdio transport, stdout carries the JSON-RPC stream, so operator diagnostics
+# must never be written to stdout (a stray print corrupts the protocol). Route the
+# standard logging module to stderr; the generated server emits no bare print() calls.
+logging.basicConfig(level=logging.INFO, stream=sys.stderr)
 
 mcp = FastMCP(MCP_SERVER_CONFIG["name"])
 
@@ -257,6 +712,126 @@ mcp = FastMCP(MCP_SERVER_CONFIG["name"])
 ${plan.tools.map(renderPythonServerTool).join("\n")}
 if __name__ == "__main__":
 ${runLine}
+`;
+}
+
+function renderAccess(plan: GenerationPlan): string {
+    const localhostHosts = JSON.stringify([...LOCALHOST_ORIGIN_HOSTS]);
+
+    return `"""MCP server access enforcement for HTTP/SSE transports.
+
+Mirrors the Node target: constant-time bearer comparison plus deny-by-default
+Origin validation (only localhost origins are accepted when no allow-list is
+configured, mitigating DNS-rebinding against locally-bound servers).
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+from urllib.parse import urlparse
+
+from starlette.middleware import Middleware
+from starlette.types import ASGIApp, Receive, Scope, Send
+
+from config import MCP_SERVER_ACCESS_CONFIG
+
+# Hosts treated as local when no explicit allow-list is configured (deny-by-default).
+LOCALHOST_HOSTS = set(${localhostHosts})
+
+
+def assert_mcp_server_access_config() -> None:
+    if MCP_SERVER_ACCESS_CONFIG["auth_type"] == "bearer" and not MCP_SERVER_ACCESS_CONFIG["auth_token"]:
+        raise RuntimeError(
+            "${plan.mcpServerAuth.tokenEnvVar} is required when MCP server bearer auth is enabled."
+        )
+
+
+def _is_localhost_origin(origin: str) -> bool:
+    try:
+        return urlparse(origin).hostname in LOCALHOST_HOSTS
+    except ValueError:
+        return False
+
+
+def is_origin_allowed(origin: str | None, allowed_origins: list[str]) -> bool:
+    # Requests without an Origin header (e.g. non-browser clients) are permitted.
+    if not origin:
+        return True
+    # Deny-by-default: with no configured allow-list, only localhost origins are accepted.
+    if not allowed_origins:
+        return _is_localhost_origin(origin)
+    return origin in allowed_origins
+
+
+def is_bearer_authorized(authorization: str | None, token: str) -> bool:
+    if not token or not authorization:
+        return False
+    # Constant-time comparison to avoid leaking the token via timing side channels.
+    return hmac.compare_digest(authorization, f"Bearer {token}")
+
+
+def _header(scope: Scope, name: str) -> str | None:
+    target = name.lower().encode("latin-1")
+    for raw_name, raw_value in scope.get("headers", []):
+        if raw_name == target:
+            return raw_value.decode("latin-1")
+    return None
+
+
+class McpAccessMiddleware:
+    """ASGI middleware enforcing Origin policy and bearer auth for the MCP endpoint."""
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        origin = _header(scope, "origin")
+        allowed_origins = MCP_SERVER_ACCESS_CONFIG["allowed_origins"]
+
+        if not is_origin_allowed(origin, allowed_origins):
+            await self._reject(send, 403, "Origin not allowed")
+            return
+
+        if MCP_SERVER_ACCESS_CONFIG["auth_type"] == "bearer":
+            token = MCP_SERVER_ACCESS_CONFIG["auth_token"]
+            if not token:
+                await self._reject(send, 500, "${plan.mcpServerAuth.tokenEnvVar} is required")
+                return
+
+            authorization = _header(scope, "authorization")
+            if not is_bearer_authorized(authorization, token):
+                await self._reject(
+                    send,
+                    401,
+                    "Missing or invalid bearer token",
+                    extra_headers=[(b"www-authenticate", b"Bearer")],
+                )
+                return
+
+        await self.app(scope, receive, send)
+
+    async def _reject(
+        self,
+        send: Send,
+        status_code: int,
+        message: str,
+        extra_headers: list[tuple[bytes, bytes]] | None = None,
+    ) -> None:
+        body = json.dumps({"error": message}).encode("utf-8")
+        headers = [(b"content-type", b"application/json")]
+        if extra_headers:
+            headers.extend(extra_headers)
+        await send({"type": "http.response.start", "status": status_code, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
+def build_mcp_access_middleware() -> list[Middleware]:
+    return [Middleware(McpAccessMiddleware)]
 `;
 }
 
@@ -283,6 +858,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+def parse_mcp_allowed_origins(value: str | None, fallback: list[str]) -> list[str]:
+    if value is None or not value.strip():
+        return list(fallback)
+    return [origin.strip() for origin in value.split(",") if origin.strip()]
+
+
 API_BASE_URL = os.getenv("API_BASE_URL", ${JSON.stringify(plan.spec.baseUrl || "https://api.example.com")})
 AUTH_SCHEMES = {
 ${authSchemeEntries}
@@ -294,6 +875,12 @@ MCP_SERVER_CONFIG = {
     "host": ${JSON.stringify(plan.server.host)},
     "port": ${plan.server.port},
 }
+
+MCP_SERVER_ACCESS_CONFIG = {
+    "auth_type": ${JSON.stringify(plan.mcpServerAuth.type)},
+    "auth_token": os.getenv(${JSON.stringify(plan.mcpServerAuth.tokenEnvVar)}, "") if ${JSON.stringify(plan.mcpServerAuth.type)} == "bearer" else "",
+    "allowed_origins": parse_mcp_allowed_origins(os.getenv(${JSON.stringify(plan.mcpServerAuth.allowedOriginsEnvVar)}), ${JSON.stringify(plan.mcpServerAuth.allowedOrigins)}),
+}
 `;
 }
 
@@ -302,6 +889,7 @@ function renderApiClient(): string {
 
 import base64
 import httpx
+from fastmcp.exceptions import ToolError
 from config import API_BASE_URL
 
 client = httpx.Client(timeout=30.0)
@@ -382,7 +970,11 @@ def request_api(
 
 
 def response_to_tool_result(response: httpx.Response) -> dict:
-    response.raise_for_status()
+    # Surface upstream HTTP failures as ToolError so the client receives an isError
+    # tool result the model can self-correct on, rather than a raw traceback that
+    # would fail the tool call opaquely.
+    if response.status_code >= 400:
+        raise ToolError(f"HTTP {response.status_code}: {response.text}")
     if "application/json" in response.headers.get("content-type", ""):
         return response.json()
     return {"text": response.text}
@@ -548,53 +1140,97 @@ function renderReadme(plan: GenerationPlan): string {
 }
 
 function renderDockerfile(plan: GenerationPlan): string {
-    return `FROM python:3.11-slim
+    // Two-stage build: install into a virtualenv in the build stage, then ship a lean
+    // non-root runtime that only carries the venv and sources. Same run modes as Node:
+    //   stdio: docker run -i --rm IMAGE
+    //   HTTP:  docker run -p ${plan.server.port}:${plan.server.port} -e MCP_TRANSPORT=http IMAGE
+    return `# ---- Build stage ----
+FROM python:3.11-slim AS build
 WORKDIR /app
-
+ENV PYTHONDONTWRITEBYTECODE=1
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
 COPY pyproject.toml ./
 COPY src ./src
-COPY tests ./tests
-COPY .env.example ./.env.example
 COPY makemcp.manifest.json ./makemcp.manifest.json
+RUN pip install --no-cache-dir .
 
-RUN pip install -e .
-
+# ---- Runtime stage ----
+FROM python:3.11-slim AS runtime
+WORKDIR /app
+ENV PATH="/opt/venv/bin:$PATH" PYTHONUNBUFFERED=1 MCP_TRANSPORT=${plan.runtime.transport} PORT=${plan.server.port}
+RUN groupadd --system app && useradd --system --gid app --home-dir /app app
+COPY --from=build --chown=app:app /opt/venv /opt/venv
+COPY --from=build --chown=app:app /app /app
+USER app
 EXPOSE ${plan.server.port}
-CMD ["python", "src/server.py"]
+ENTRYPOINT ["python", "src/server.py"]
 `;
 }
 
-function renderDockerCompose(plan: GenerationPlan): string {
-    const ports = plan.runtime.transport === "stdio"
-        ? ""
-        : `    ports:\n      - "${plan.server.port}:${plan.server.port}"\n`;
+// The registry `server.json` name is reverse-DNS + "/" + server id
+// (^[a-zA-Z0-9.-]+/[a-zA-Z0-9._-]+$). Default the namespace to the GitHub-verified
+// form (io.github.<owner>) since that is the simplest ownership path; owners edit
+// the placeholder owner before publishing. Mirrors the Node target's server.json,
+// with the PyPI package variant per the MCP registry schema.
+const SERVER_JSON_SCHEMA_URL = "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json";
 
-    return `services:
-  ${plan.server.name}:
-    build: .
-    env_file:
-      - .env
-${ports}    restart: unless-stopped
-`;
+function sanitizeServerId(name: string): string {
+    const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    return cleaned || "mcp-server";
 }
 
-function getPythonTestSchemaType(schema?: Record<string, unknown>): string | undefined {
-    const type = schema?.type;
-    if (typeof type === "string") return type;
-    if (Array.isArray(type)) return type.find((entry): entry is string => typeof entry === "string");
-    return undefined;
+function toRegistryTransportType(plan: GenerationPlan): "stdio" | "streamable-http" | "sse" {
+    if (plan.runtime.transport === "http") return "streamable-http";
+    if (plan.runtime.transport === "sse") return "sse";
+    return "stdio";
 }
 
-function getPythonTestSampleValue(param: GenerationTool["params"][number]): unknown {
-    const schemaType = getPythonTestSchemaType(param.schema);
+function buildServerJsonEnvironmentVariables(plan: GenerationPlan): Array<Record<string, unknown>> {
+    const variables: Array<Record<string, unknown>> = [
+        { name: "API_BASE_URL", description: "Base URL for upstream API requests.", isRequired: false, isSecret: false },
+    ];
 
-    if (param.schema?.format === "binary" || schemaType === "file") return "ZmlsZSBjb250ZW50";
-    if (schemaType === "array") return ["alpha", "beta"];
-    if (schemaType === "object") return { status: "open", owner: "team" };
-    if (schemaType === "integer" || schemaType === "number") return 42;
-    if (schemaType === "boolean") return true;
+    for (const auth of collectAuthSchemes(plan)) {
+        if (auth.apiKeyEnvVar) variables.push({ name: auth.apiKeyEnvVar, description: "API key for the upstream API.", isRequired: false, isSecret: true });
+        if (auth.bearerTokenEnvVar) variables.push({ name: auth.bearerTokenEnvVar, description: "Bearer token for the upstream API.", isRequired: false, isSecret: true });
+        if (auth.basicUsernameEnvVar) variables.push({ name: auth.basicUsernameEnvVar, description: "Basic auth username for the upstream API.", isRequired: false, isSecret: false });
+        if (auth.basicPasswordEnvVar) variables.push({ name: auth.basicPasswordEnvVar, description: "Basic auth password for the upstream API.", isRequired: false, isSecret: true });
+    }
 
-    return `${param.argName}-value`;
+    if (plan.runtime.transport !== "stdio" && plan.mcpServerAuth.type === "bearer") {
+        variables.push({ name: plan.mcpServerAuth.tokenEnvVar, description: "Bearer token protecting MCP server access over HTTP/SSE.", isRequired: true, isSecret: true });
+    }
+
+    return variables;
+}
+
+// Emit a registry-ready server.json (PyPI variant) per the MCP registry schema.
+// `identifier`, `version`, and the top-level `version` are kept in sync with the
+// package version; owners replace the placeholder namespace/repository before publishing.
+function renderServerJson(plan: GenerationPlan): string {
+    const serverId = sanitizeServerId(plan.server.name);
+    const description = (plan.spec.description?.trim() || `MCP server generated from ${plan.spec.title}.`).slice(0, 100);
+
+    return `${JSON.stringify({
+        $schema: SERVER_JSON_SCHEMA_URL,
+        name: `io.github.OWNER/${serverId}`,
+        description,
+        title: plan.spec.title,
+        repository: { url: "https://github.com/OWNER/REPO", source: "github" },
+        version: plan.server.version,
+        packages: [
+            {
+                registryType: "pypi",
+                registryBaseUrl: "https://pypi.org",
+                identifier: plan.server.name,
+                version: plan.server.version,
+                runtimeHint: "uvx",
+                transport: { type: toRegistryTransportType(plan) },
+                environmentVariables: buildServerJsonEnvironmentVariables(plan),
+            },
+        ],
+    }, null, 2)}\n`;
 }
 
 function toPythonLiteral(value: unknown): string {
@@ -611,159 +1247,6 @@ function toPythonLiteral(value: unknown): string {
     return JSON.stringify(String(value));
 }
 
-function pythonScalarToExpectedString(value: unknown): string {
-    if (value === null || value === undefined) return "";
-    if (typeof value === "boolean") return value ? "true" : "false";
-    if (typeof value === "string" || typeof value === "number") return String(value);
-    return String(value);
-}
-
-function pythonExpectedObjectEntries(value: unknown): [string, unknown][] {
-    if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-    return Object.entries(value as Record<string, unknown>).filter(([, entryValue]) => entryValue !== undefined);
-}
-
-function pythonExpectedExplode(style: string, explode?: boolean): boolean {
-    return explode ?? style === "form";
-}
-
-function pythonExpectedSerializedParameterValue(
-    name: string,
-    value: unknown,
-    options: { location: string; style?: string; explode?: boolean }
-): string {
-    const style = options.style || (options.location === "path" || options.location === "header" ? "simple" : "form");
-    const explode = pythonExpectedExplode(style, options.explode);
-    const delimiter = style === "spaceDelimited" ? " " : style === "pipeDelimited" ? "|" : ",";
-
-    if (Array.isArray(value)) {
-        return value.map(pythonScalarToExpectedString).join(delimiter);
-    }
-
-    const entries = pythonExpectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (explode) {
-            return entries.map(([key, entryValue]) => `${key}=${pythonScalarToExpectedString(entryValue)}`).join(delimiter);
-        }
-        return entries.flatMap(([key, entryValue]) => [key, pythonScalarToExpectedString(entryValue)]).join(delimiter);
-    }
-
-    return pythonScalarToExpectedString(value);
-}
-
-function pythonExpectedPathParameter(
-    name: string,
-    value: unknown,
-    options: { style?: string; explode?: boolean }
-): string {
-    const style = options.style || "simple";
-    const explode = pythonExpectedExplode(style, options.explode);
-    const encode = (entry: unknown) => encodeURIComponent(pythonScalarToExpectedString(entry));
-    const encodedName = encodeURIComponent(name);
-
-    if (Array.isArray(value)) {
-        const encodedValues = value.map(encode);
-        if (style === "label") return `.${encodedValues.join(".")}`;
-        if (style === "matrix") {
-            return explode
-                ? encodedValues.map((entry) => `;${encodedName}=${entry}`).join("")
-                : `;${encodedName}=${encodedValues.join(",")}`;
-        }
-        return encodedValues.join(",");
-    }
-
-    const entries = pythonExpectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (style === "label") {
-            const values = explode
-                ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
-                : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-            return `.${values.join(".")}`;
-        }
-        if (style === "matrix") {
-            if (explode) {
-                return entries.map(([key, entryValue]) => `;${encodeURIComponent(key)}=${encode(entryValue)}`).join("");
-            }
-            const values = entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-            return `;${encodedName}=${values.join(",")}`;
-        }
-        const values = explode
-            ? entries.map(([key, entryValue]) => `${encodeURIComponent(key)}=${encode(entryValue)}`)
-            : entries.flatMap(([key, entryValue]) => [encodeURIComponent(key), encode(entryValue)]);
-        return values.join(",");
-    }
-
-    const encodedValue = encode(value);
-    if (style === "label") return `.${encodedValue}`;
-    if (style === "matrix") return `;${encodedName}=${encodedValue}`;
-    return encodedValue;
-}
-
-function pythonExpectedQueryEntries(
-    name: string,
-    value: unknown,
-    options: { style?: string; explode?: boolean }
-): [string, string][] {
-    const style = options.style || "form";
-    const explode = pythonExpectedExplode(style, options.explode);
-
-    if (Array.isArray(value)) {
-        if (style === "form" && explode) {
-            return value.map((entry) => [name, pythonScalarToExpectedString(entry)]);
-        }
-        return [[name, pythonExpectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
-    }
-
-    const entries = pythonExpectedObjectEntries(value);
-    if (entries.length > 0) {
-        if (style === "deepObject") {
-            return entries.map(([key, entryValue]) => [`${name}[${key}]`, pythonScalarToExpectedString(entryValue)]);
-        }
-        if (style === "form" && explode) {
-            return entries.map(([key, entryValue]) => [key, pythonScalarToExpectedString(entryValue)]);
-        }
-        return [[name, pythonExpectedSerializedParameterValue(name, value, { location: "query", style, explode })]];
-    }
-
-    return [[name, pythonScalarToExpectedString(value)]];
-}
-
-function getPythonTestArgs(tool: GenerationTool): Record<string, unknown> {
-    return Object.fromEntries(tool.params.map((param) => [param.argName, getPythonTestSampleValue(param)]));
-}
-
-function getPythonExpectedPath(tool: GenerationTool, args: Record<string, unknown>): string {
-    return tool.params
-        .filter((param) => param.location === "path")
-        .reduce((path, param) => {
-            const replacement = pythonExpectedPathParameter(param.sourceName, args[param.argName], {
-                style: param.style,
-                explode: param.explode,
-            });
-            return path.replace(`{${param.sourceName}}`, replacement);
-        }, tool.path);
-}
-
-function getPythonExpectedQueryEntries(tool: GenerationTool, args: Record<string, unknown>): [string, string][] {
-    return tool.params
-        .filter((param) => param.location === "query")
-        .flatMap((param) => pythonExpectedQueryEntries(param.sourceName, args[param.argName], {
-            style: param.style,
-            explode: param.explode,
-        }));
-}
-
-function getPythonExpectedJsonBody(tool: GenerationTool, args: Record<string, unknown>): unknown {
-    const requestBody = tool.requestBody;
-    if (!requestBody) return undefined;
-
-    if (requestBody.contentKind === "rawJsonObject" || requestBody.contentKind === "rawArray") {
-        return args[requestBody.params[0]?.argName || "body"];
-    }
-
-    return Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
-}
-
 function renderPythonAuthEnvAssignments(plan: GenerationPlan): string {
     const assignments: string[] = [`    monkeypatch.setenv("API_BASE_URL", "https://unit.example.test")`];
 
@@ -778,9 +1261,9 @@ function renderPythonAuthEnvAssignments(plan: GenerationPlan): string {
 }
 
 function renderPythonOperationBehaviorTest(tool: GenerationTool): string {
-    const args = getPythonTestArgs(tool);
-    const expectedPath = getPythonExpectedPath(tool, args);
-    const expectedQueryEntries = getPythonExpectedQueryEntries(tool, args);
+    const args = getTestArgs(tool);
+    const expectedPath = getExpectedPath(tool, args);
+    const expectedQueryEntries = getExpectedQueryEntries(tool, args);
     const headerParams = tool.params.filter((param) => param.location === "header");
     const cookieParams = tool.params.filter((param) => param.location === "cookie");
     const requestBody = tool.requestBody;
@@ -792,16 +1275,16 @@ function renderPythonOperationBehaviorTest(tool: GenerationTool): string {
     ];
 
     for (const param of headerParams) {
-        assertions.push(`    assert call["headers"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(pythonExpectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "header", style: param.style, explode: param.explode }))}`);
+        assertions.push(`    assert call["headers"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(expectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "header", style: param.style, explode: param.explode }))}`);
     }
 
     for (const param of cookieParams) {
-        assertions.push(`    assert call["cookies"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(pythonExpectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "cookie", style: param.style, explode: param.explode }))}`);
+        assertions.push(`    assert call["cookies"][${JSON.stringify(param.sourceName)}] == ${JSON.stringify(expectedSerializedParameterValue(param.sourceName, args[param.argName], { location: "cookie", style: param.style, explode: param.explode }))}`);
     }
 
     if (requestBody?.contentKind === "flattenedObject" || requestBody?.contentKind === "rawJsonObject" || requestBody?.contentKind === "rawArray") {
         assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
-        assertions.push(`    assert call["json"] == ${toPythonLiteral(getPythonExpectedJsonBody(tool, args))}`);
+        assertions.push(`    assert call["json"] == ${toPythonLiteral(getExpectedJsonBody(tool, args))}`);
     } else if (requestBody?.contentKind === "formUrlencoded") {
         const entries = Object.fromEntries(requestBody.params.map((param) => [param.sourceName, args[param.argName]]));
         assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
@@ -813,12 +1296,12 @@ function renderPythonOperationBehaviorTest(tool: GenerationTool): string {
                 assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}][1] == b"file content"`);
                 assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}][2] == "application/octet-stream"`);
             } else {
-                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}] == (None, ${JSON.stringify(pythonScalarToExpectedString(args[param.argName]))})`);
+                assertions.push(`    assert call["files"][${JSON.stringify(param.sourceName)}] == (None, ${JSON.stringify(scalarToExpectedString(args[param.argName]))})`);
             }
         }
     } else if (requestBody?.contentKind === "text") {
         assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
-        assertions.push(`    assert call["content"] == ${JSON.stringify(pythonScalarToExpectedString(args[requestBody.params[0]?.argName || "body"]))}`);
+        assertions.push(`    assert call["content"] == ${JSON.stringify(scalarToExpectedString(args[requestBody.params[0]?.argName || "body"]))}`);
     } else if (requestBody?.contentKind === "binary") {
         assertions.push(`    assert call["headers"]["Content-Type"] == ${JSON.stringify(requestBody.contentType)}`);
         assertions.push(`    assert call["content"] == args[${JSON.stringify(requestBody.params[0]?.argName || "body")}]`);
@@ -844,6 +1327,8 @@ import sys
 from pathlib import Path
 
 import pytest
+
+from fastmcp.exceptions import ToolError
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -909,7 +1394,9 @@ def test_request_api_constructs_urls_and_reports_http_errors(monkeypatch) -> Non
     assert call["params"] == [("q", "a b")]
     assert call["cookies"] == {"session": "cookie-value"}
 
-    with pytest.raises(RuntimeError, match="HTTP 418: teapot"):
+    # Upstream failures are surfaced as ToolError (an isError tool result) so the
+    # model can self-correct rather than the tool call failing opaquely.
+    with pytest.raises(ToolError, match="HTTP 418: teapot"):
         api_client.response_to_tool_result(FakeResponse(status_code=418, text="teapot"))
 
 
@@ -968,7 +1455,7 @@ ${plan.tools.map(renderPythonOperationBehaviorTest).join("\n\n")}
 
 export function generatePythonProject(plan: GenerationPlan): GeneratedProject {
     const files = new Map<string, string>();
-    const manifest = buildManifest(plan);
+    const manifest = buildManifest(plan, "python");
 
     files.set("pyproject.toml", `[project]
 name = ${JSON.stringify(plan.server.name)}
@@ -978,7 +1465,9 @@ requires-python = ">=3.10"
 dependencies = [
     "fastmcp==${FASTMCP_VERSION}",
     "httpx>=0.25.0",
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1.0.0",${pythonNeedsHttpServer(plan) ? `
+    "uvicorn>=0.30.0",
+    "starlette>=0.37.0",` : ""}
 ]
 ${plan.features.tests ? `
 [project.optional-dependencies]
@@ -992,6 +1481,11 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 only-include = ["src"]
 sources = ["src"]
+
+# Cross-check field for the MCP registry: must equal the server.json \`name\`,
+# proving the published package and the registry entry share an owner.
+[tool.mcp]
+name = ${JSON.stringify(`io.github.OWNER/${sanitizeServerId(plan.server.name)}`)}
 `);
 
     files.set(".env.example", getEnvExample(plan));
@@ -1000,8 +1494,12 @@ sources = ["src"]
     files.set("src/api_client.py", renderApiClient());
     files.set("src/operations.py", renderOperations(plan));
     files.set("src/serialization.py", renderSerialization());
+    if (pythonNeedsHttpServer(plan)) {
+        files.set("src/access.py", renderAccess(plan));
+    }
     files.set("src/__init__.py", "");
     files.set("makemcp.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {
         files.set("README.md", renderReadme(plan));

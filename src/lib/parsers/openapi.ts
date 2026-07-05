@@ -1,5 +1,5 @@
 import SwaggerParser from "@apidevtools/swagger-parser";
-import type { ParsedSpec } from "../../store/project-store";
+import type { ParsedSpec } from "../api-model/parsed-spec.ts";
 import { buildOpenAPIModel } from "../api-model/openapi.ts";
 import type { OpenAPISpec } from "../api-model/openapi.ts";
 import type { ApiMediaType, ApiModel, ApiOperation, ApiResponse, ApiSchema, ApiServer } from "../api-model/types.ts";
@@ -49,14 +49,38 @@ export async function parseOpenAPIFromContent(content: string, filename: string)
     }
 }
 
-// Parse from URL
-export async function parseOpenAPIFromURL(url: string): Promise<ParsedSpec> {
+// Parse from URL.
+//
+// The raw fetch happens SERVER-SIDE via the /api/fetch-spec proxy (which is
+// SSRF-hardened) to avoid browser CORS failures. Once we have the text we run
+// it through the SAME client-side pipeline as the file/paste tabs, so OpenAPI,
+// Swagger AND Postman collections all work identically regardless of source.
+export async function parseOpenAPIFromURL(url: string): Promise<ParsedSpec & { format?: string }> {
+    let content: string;
     try {
-        return parseOpenAPISpec(url);
+        const response = await fetch("/api/fetch-spec", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ url }),
+        });
+
+        const data = (await response.json().catch(() => null)) as
+            | { content?: string; error?: string }
+            | null;
+
+        if (!response.ok || !data || typeof data.content !== "string") {
+            const message = data?.error || `Failed to fetch spec (HTTP ${response.status})`;
+            throw new Error(message);
+        }
+
+        content = data.content;
     } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to fetch spec";
         throw new Error(`Failed to fetch from ${url}: ${message}`);
     }
+
+    // Reuse the shared detect-and-parse pipeline (handles Postman vs OpenAPI).
+    return parseOpenAPIFromContent(content, url);
 }
 
 // Validation types
@@ -469,4 +493,122 @@ export function validateSpec(spec: ParsedSpec): ValidationResult {
         warnings,
         info,
     };
+}
+
+// ---------------------------------------------------------------------------
+// Validation summary plumbing (Wave 2, Task 3)
+// ---------------------------------------------------------------------------
+// validateSpec() above produces rich errors/warnings/info but was never
+// surfaced in the UI. These helpers:
+//   - build a concise, serializable summary for a banner on entering the editor,
+//   - stash it in sessionStorage so the editor can pick it up once (we cannot
+//     extend the Zustand store from the import feature), and
+//   - index warnings by endpoint path so the editor can render per-endpoint
+//     badges. All of this REUSES validateSpec() — no duplicated detection.
+// ---------------------------------------------------------------------------
+
+const VALIDATION_SUMMARY_STORAGE_KEY = "makemcp-validation-summary";
+
+export interface ValidationSummary {
+    title: string;
+    endpointCount: number;
+    errorCount: number;
+    warningCount: number;
+    infoCount: number;
+    /** Short sentence, e.g. "Parsed Petstore — 19 endpoints, 2 warnings". */
+    headline: string;
+    /** A few notable messages (deduped, spec-level first). */
+    notable: string[];
+}
+
+function firstUniqueValidationMessages(messages: ValidationMessage[], limit: number): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const message of messages) {
+        const text = message.path ? `${message.path}: ${message.message}` : message.message;
+        if (seen.has(text)) continue;
+        seen.add(text);
+        out.push(text);
+        if (out.length >= limit) break;
+    }
+    return out;
+}
+
+export function buildValidationSummary(spec: ParsedSpec, label?: string): ValidationSummary {
+    const result = validateSpec(spec);
+    const title = label || spec.info.title || "API";
+    const endpointCount = spec.endpoints.length;
+
+    const parts = [`${endpointCount} endpoint${endpointCount === 1 ? "" : "s"}`];
+    if (result.errors.length > 0) {
+        parts.push(`${result.errors.length} error${result.errors.length === 1 ? "" : "s"}`);
+    }
+    if (result.warnings.length > 0) {
+        parts.push(`${result.warnings.length} warning${result.warnings.length === 1 ? "" : "s"}`);
+    }
+
+    // Spec-level messages (no path) are the most actionable, list them first;
+    // errors before warnings.
+    const ordered = [
+        ...result.errors.filter((message) => !message.path),
+        ...result.warnings.filter((message) => !message.path),
+        ...result.errors.filter((message) => message.path),
+        ...result.warnings.filter((message) => message.path),
+    ];
+
+    return {
+        title,
+        endpointCount,
+        errorCount: result.errors.length,
+        warningCount: result.warnings.length,
+        infoCount: result.info.length,
+        headline: `Parsed ${title} — ${parts.join(", ")}`,
+        notable: firstUniqueValidationMessages(ordered, 4),
+    };
+}
+
+/** Persist the summary so the editor can display it once on arrival. */
+export function stashValidationSummary(summary: ValidationSummary): void {
+    if (typeof window === "undefined") return;
+    try {
+        window.sessionStorage.setItem(VALIDATION_SUMMARY_STORAGE_KEY, JSON.stringify(summary));
+    } catch {
+        /* sessionStorage unavailable — the banner is a nice-to-have, skip it. */
+    }
+}
+
+/** Read (and clear) the stashed summary. Returns null if none. */
+export function consumeValidationSummary(): ValidationSummary | null {
+    if (typeof window === "undefined") return null;
+    try {
+        const raw = window.sessionStorage.getItem(VALIDATION_SUMMARY_STORAGE_KEY);
+        if (!raw) return null;
+        window.sessionStorage.removeItem(VALIDATION_SUMMARY_STORAGE_KEY);
+        return JSON.parse(raw) as ValidationSummary;
+    } catch {
+        return null;
+    }
+}
+
+/**
+ * Index warning + error messages by endpoint path ("METHOD /path") so the
+ * editor can attach per-endpoint badges. Spec-level messages (no path) are
+ * intentionally excluded — those go in the banner.
+ */
+export function buildEndpointWarnings(spec: ParsedSpec): Map<string, ValidationMessage[]> {
+    const result = validateSpec(spec);
+    const byPath = new Map<string, ValidationMessage[]>();
+
+    const add = (message: ValidationMessage) => {
+        if (!message.path) return;
+        const list = byPath.get(message.path) ?? [];
+        if (list.some((existing) => existing.code === message.code && existing.message === message.message)) return;
+        list.push(message);
+        byPath.set(message.path, list);
+    };
+
+    result.errors.forEach(add);
+    result.warnings.forEach(add);
+
+    return byPath;
 }

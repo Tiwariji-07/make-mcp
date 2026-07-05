@@ -50,12 +50,23 @@ function renderEnvVars(plan: GenerationPlan): string {
         }
     }
 
+    if (plan.runtime.transport !== "stdio") {
+        const tokenNotes = plan.mcpServerAuth.type === "bearer"
+            ? "Required; set to a long random value."
+            : "Ignored unless bearer auth is selected.";
+        const originNotes = plan.mcpServerAuth.allowedOrigins.length > 0
+            ? `\`${plan.mcpServerAuth.allowedOrigins.join(",")}\``
+            : "Optional; unset allows only localhost origins (deny-by-default).";
+        rows.push(`| \`${plan.mcpServerAuth.tokenEnvVar}\` | Bearer token for MCP server access over HTTP/SSE. This protects MCP server access, not upstream API calls. | ${tokenNotes} |`);
+        rows.push(`| \`${plan.mcpServerAuth.allowedOriginsEnvVar}\` | Comma-separated origins allowed to call this MCP server. Generated Node also answers CORS preflight requests for allowed origins. | ${originNotes} |`);
+    }
+
     return `| Variable | Purpose | Default / Notes |
 | --- | --- | --- |
 ${rows.join("\n")}`;
 }
 
-function renderAuthNotes(plan: GenerationPlan): string {
+function renderUpstreamAuthNotes(plan: GenerationPlan): string {
     const authSchemes = collectAuthSchemes(plan);
 
     if (authSchemes.length === 0) {
@@ -75,6 +86,43 @@ function renderAuthNotes(plan: GenerationPlan): string {
 
         return `- \`${scheme.schemeName}\`: sends HTTP Basic credentials from \`${auth.basicUsernameEnvVar}\` and \`${auth.basicPasswordEnvVar}\`.`;
     }).join("\n");
+}
+
+function renderMcpServerAccessNotes(plan: GenerationPlan): string {
+    if (plan.runtime.transport === "stdio") {
+        return "MCP server access auth is not applicable to stdio because the client communicates over local process stdin/stdout streams.";
+    }
+
+    const notes = [
+        "MCP server access auth protects the generated MCP endpoint itself. It is separate from upstream API auth, which is used only when tools call the upstream API.",
+    ];
+
+    if (plan.runtime.language === "python") {
+        notes.push("Generated Python FastMCP output enforces MCP server access in `src/access.py`, an ASGI middleware installed on the FastMCP HTTP app. It validates the `Origin` header (deny-by-default: only localhost origins are accepted when no allow-list is set) and, when bearer auth is enabled, requires `Authorization: Bearer <token>` using a constant-time comparison.");
+        if (plan.mcpServerAuth.type === "bearer") {
+            notes.push("Set `MCP_AUTH_TOKEN`; HTTP/SSE requests must include `Authorization: Bearer <token>`. The server refuses to start when bearer auth is enabled but the token is unset.");
+        } else {
+            notes.push("Bearer auth is disabled. Select bearer auth during generation before relying on `MCP_AUTH_TOKEN`.");
+        }
+    } else if (plan.mcpServerAuth.type === "bearer") {
+        notes.push("Set `MCP_AUTH_TOKEN`; HTTP/SSE requests must include `Authorization: Bearer <token>`.");
+    } else {
+        notes.push("Bearer auth is disabled. Select bearer auth during generation before relying on `MCP_AUTH_TOKEN`.");
+    }
+
+    if (plan.mcpServerAuth.allowedOrigins.length > 0) {
+        notes.push(`Requests with an \`Origin\` header must match one of: ${plan.mcpServerAuth.allowedOrigins.map((origin) => `\`${origin}\``).join(", ")}. Override with \`MCP_ALLOWED_ORIGINS\`.`);
+    } else {
+        notes.push("No allowed-origin list is configured. Set `MCP_ALLOWED_ORIGINS` to restrict browser-origin requests.");
+    }
+
+    if (plan.server.host === "0.0.0.0") {
+        notes.push("This server is configured to bind `0.0.0.0`. Do not expose HTTP/SSE publicly without MCP server access auth and TLS termination.");
+    } else {
+        notes.push("For local-only HTTP/SSE development, prefer binding to `localhost` or `127.0.0.1`.");
+    }
+
+    return notes.map((note) => `- ${note}`).join("\n");
 }
 
 function renderWarnings(plan: GenerationPlan): string {
@@ -130,6 +178,47 @@ function getClientConfigNote(plan: GenerationPlan): string {
     }
 
     return "Client configuration formats vary by MCP client. Use this as a starting point, and configure `.env` on the server process where this MCP server runs:";
+}
+
+// Deploy section for the generated server, gated by language. Node ships one-click
+// deploy buttons; Python (FastMCP) ships FastMCP Cloud + Docker instructions. Owners
+// replace OWNER/REPO (and the Railway template id) with their own before publishing.
+function renderDeploySection(plan: GenerationPlan): string {
+    if (plan.runtime.language === "python") {
+        return `## Deploy
+
+Replace \`OWNER/REPO\` with your published repository before deploying.
+
+### FastMCP Cloud
+
+The fastest path for FastMCP servers. Push this project to GitHub, then create a project at [fastmcp.cloud](https://fastmcp.cloud) pointed at your repository. FastMCP Cloud detects the \`mcp\` object in \`src/server.py\`, installs \`pyproject.toml\`, and hosts a remote Streamable HTTP endpoint. Set the environment variables from the table above in the project settings.
+
+### Docker
+
+The generated \`Dockerfile\` builds a self-contained image (stdio by default, Streamable HTTP via \`MCP_TRANSPORT=http\`).
+
+\`\`\`bash
+docker build -t ${plan.server.name} .
+# stdio (keep stdin open, no TTY):
+docker run -i --rm --env-file .env ${plan.server.name}
+# Streamable HTTP:
+docker run -p ${plan.server.port}:${plan.server.port} -e MCP_TRANSPORT=http --env-file .env ${plan.server.name}
+\`\`\`
+
+> Cloudflare Workers one-click deploy is Node-only and is not offered for the Python target.
+
+`;
+    }
+
+    return `## Deploy
+
+Replace \`OWNER/REPO\` (and the Railway template id) with your published repository before using these buttons.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/OWNER/REPO)
+[![Deploy with Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https://github.com/OWNER/REPO)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/YOUR_TEMPLATE_ID?utm_medium=integration&utm_source=button&utm_campaign=generic)
+
+`;
 }
 
 function renderRuntimeDependencies(runtime: ReadmeRuntimeDetails): string {
@@ -202,13 +291,21 @@ This server is configured for ${transportName}.
 - \`http\`: Streamable HTTP, recommended for remote or server deployments.
 - \`sse\`: legacy option for older clients.
 
-${buildSection}${renderRuntimeDependencies(runtime)}## Tools
+${buildSection}${renderDeploySection(plan)}${renderRuntimeDependencies(runtime)}## Tools
 
 ${plan.tools.map((tool) => `- \`${tool.displayName}\`: ${tool.description}`).join("\n")}
 
-## Auth Notes
+## Upstream API Auth
 
-${renderAuthNotes(plan)}
+${renderUpstreamAuthNotes(plan)}
+
+## MCP Server Access
+
+${renderMcpServerAccessNotes(plan)}
+
+## HTTP Transport Security
+
+For HTTP/SSE deployments, terminate TLS before traffic reaches this server and avoid binding to a public interface unless bearer auth or an authenticated gateway is in place.
 
 ## Known Warnings
 
