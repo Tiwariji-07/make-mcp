@@ -1,0 +1,65 @@
+name: "Problem with a generated server"
+description: The MCP server mcpmint generated doesn't build, run, or behave correctly.
+labels: ["generated-output"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! Problems with *generated output* are the most valuable bugs we get — they usually point at a gap in the generator. The more of your spec and config you can share, the faster we can reproduce it.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What went wrong
+      description: What did the generated server do (or fail to do)? Paste the exact error, stack trace, or compiler/interpreter output.
+      placeholder: |
+        e.g. `npm run build` fails with: src/index.ts(42,10): error TS...
+        or: the tool `create_pet` sends the request body in the wrong shape.
+    validations:
+      required: true
+  - type: dropdown
+    id: language
+    attributes:
+      label: Target language
+      options:
+        - Node / TypeScript
+        - Python / FastMCP
+    validations:
+      required: true
+  - type: dropdown
+    id: transport
+    attributes:
+      label: Transport
+      options: ["stdio", "http (Streamable HTTP)", "sse"]
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Tool mode
+      options: ["Standard (one tool per endpoint)", "Compact (meta-tools)"]
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: How did you generate it?
+      options: ["Web app (browser)", "CLI (npx mcpmint / pip mcpmint)"]
+    validations:
+      required: true
+  - type: textarea
+    id: spec
+    attributes:
+      label: Spec (minimal repro if possible)
+      description: |
+        The smallest OpenAPI/Postman snippet that reproduces the problem, or a link to the spec. Redact anything sensitive — and remember mcpmint never uploads your spec, so we only see what you paste here.
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: mcpmint version (or commit), and the runtime you ran the generated server with (node --version / python --version).
+      placeholder: "mcpmint 0.1.0 · node v22.3.0"
+    validations:
+      required: false
