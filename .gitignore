@@ -22,6 +22,11 @@ cli/node_modules
 /build
 cli/dist
 
+# python (pypi wrapper) build artifacts
+pypi/dist
+**/__pycache__/
+*.egg-info/
+
 # misc
 .DS_Store
 *.pem
