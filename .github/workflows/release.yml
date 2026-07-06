@@ -1,0 +1,134 @@
+name: Release
+
+# Publishing model: merges to main deploy the web app (Vercel) continuously,
+# but the mcpmint packages release only when a version tag is pushed:
+#
+#   node scripts/release-version.mjs --set 0.2.0
+#   git commit -am "release: 0.2.0" && git push
+#   git tag v0.2.0 && git push --tags     <- this triggers everything below
+#
+# Both registries use OIDC Trusted Publishing (no stored tokens):
+#   - npm:  configure on npmjs.com -> package mcpmint -> Settings -> Trusted
+#           Publisher (repo mcpmint/mcpmint, workflow release.yml). Possible
+#           only after the package exists (first publish is manual).
+#   - PyPI: pypi.org -> Publishing -> add (pending) publisher for project
+#           "mcpmint" (repo mcpmint/mcpmint, workflow release.yml). Works even
+#           BEFORE the first upload via a pending publisher.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality gate + version lockstep
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Version lockstep check (tag == cli == pypi)
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          echo "Release version: $VERSION"
+          node scripts/release-version.mjs --check "$VERSION"
+
+      - name: Install app dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Generator + parser tests
+        run: npm run test:generator
+
+      - name: Build CLI bundle
+        run: npm ci && npm run build
+        working-directory: cli
+
+  publish-npm:
+    name: Publish npm (mcpmint)
+    runs-on: ubuntu-latest
+    needs: quality
+    permissions:
+      id-token: write # OIDC for npm trusted publishing + provenance
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs a recent npm CLI on the runner.
+      - name: Update npm
+        run: npm install -g npm@latest && npm --version
+
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: cli
+
+      - name: Publish to npm
+        run: npm publish
+        working-directory: cli
+
+  publish-pypi:
+    name: Publish PyPI (mcpmint)
+    runs-on: ubuntu-latest
+    needs: quality
+    environment: pypi
+    permissions:
+      id-token: write # OIDC for PyPI trusted publishing
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build sdist + wheel
+        run: |
+          python -m pip install --upgrade build
+          python -m build
+        working-directory: pypi
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: pypi/dist
+
+  github-release:
+    name: Create GitHub release
+    runs-on: ubuntu-latest
+    needs: [publish-npm, publish-pypi]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release with generated notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --generate-notes --verify-tag
