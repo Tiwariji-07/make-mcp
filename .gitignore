@@ -2,6 +2,7 @@
 
 # dependencies
 /node_modules
+cli/node_modules
 /.pnp
 .pnp.*
 .yarn/*
@@ -19,6 +20,12 @@
 
 # production
 /build
+cli/dist
+
+# python (pypi wrapper) build artifacts
+pypi/dist
+**/__pycache__/
+*.egg-info/
 
 # misc
 .DS_Store

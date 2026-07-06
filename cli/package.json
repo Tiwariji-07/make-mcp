@@ -1,0 +1,49 @@
+{
+  "name": "mcpmint",
+  "version": "0.1.0",
+  "description": "Generate MCP servers from OpenAPI and Postman specs — locally, from your terminal. Your spec never leaves your machine.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "mcpmint": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "openapi",
+    "swagger",
+    "postman",
+    "code-generator",
+    "cli",
+    "llm",
+    "ai"
+  ],
+  "homepage": "https://github.com/mcpmint/mcpmint#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mcpmint/mcpmint.git",
+    "directory": "cli"
+  },
+  "bugs": {
+    "url": "https://github.com/mcpmint/mcpmint/issues"
+  },
+  "scripts": {
+    "build": "tsup",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {
+    "@apidevtools/swagger-parser": "^12.1.0",
+    "yaml": "^2.8.2",
+    "zod": "^4.1.13"
+  },
+  "devDependencies": {
+    "tsup": "^8.3.5"
+  }
+}

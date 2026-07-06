@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mcpmint"
+version = "0.1.0"
+description = "Generate MCP servers from OpenAPI and Postman specs. Python entry point that runs the mcpmint CLI via Node."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+authors = [{ name = "mcpmint" }]
+keywords = ["mcp", "model-context-protocol", "openapi", "swagger", "postman", "code-generator", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Code Generators",
+]
+
+[project.urls]
+Homepage = "https://github.com/mcpmint/mcpmint"
+Repository = "https://github.com/mcpmint/mcpmint"
+Issues = "https://github.com/mcpmint/mcpmint/issues"
+
+[project.scripts]
+mcpmint = "mcpmint.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mcpmint"]
