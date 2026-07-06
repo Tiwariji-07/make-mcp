@@ -13,7 +13,7 @@ import { createRequire } from "node:module";
 import type { GeneratedProject, VerificationCheck, VerificationMode, VerificationReport } from "./types.ts";
 
 const require = createRequire(import.meta.url);
-const COMMAND_TIMEOUT_MS = Number(process.env.MAKEMCP_FULL_VERIFY_TIMEOUT_MS || 120_000);
+const COMMAND_TIMEOUT_MS = Number(process.env.MCPMINT_FULL_VERIFY_TIMEOUT_MS || 120_000);
 const MAX_COMMAND_OUTPUT_LENGTH = 6000;
 
 function resolveTypeScriptCompilerPath(): string {
@@ -26,7 +26,7 @@ function resolveTypeScriptCompilerPath(): string {
 }
 
 function writeProjectToTempDir(project: GeneratedProject): string {
-    const tempDir = mkdtempSync(join(tmpdir(), "makemcp-project-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "mcpmint-project-"));
 
     for (const [filePath, content] of project.files) {
         const absolutePath = join(tempDir, filePath);
@@ -147,7 +147,7 @@ function verifyProjectShape(project: GeneratedProject): VerificationCheck {
             "src/api/client.ts",
             "src/api/operations.ts",
             "src/api/serialization.ts",
-            "makemcp.manifest.json",
+            "mcpmint.manifest.json",
         ]
         : [
             "pyproject.toml",
@@ -156,7 +156,7 @@ function verifyProjectShape(project: GeneratedProject): VerificationCheck {
             "src/api_client.py",
             "src/operations.py",
             "src/serialization.py",
-            "makemcp.manifest.json",
+            "mcpmint.manifest.json",
         ];
 
     const missing = requiredFiles.filter((filePath) => !project.files.has(filePath));

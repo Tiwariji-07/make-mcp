@@ -507,6 +507,7 @@ export function validateSpec(spec: ParsedSpec): ValidationResult {
 //     badges. All of this REUSES validateSpec() — no duplicated detection.
 // ---------------------------------------------------------------------------
 
+// Legacy localStorage key kept intentionally so cached validation summaries survive the mcpmint rebrand.
 const VALIDATION_SUMMARY_STORAGE_KEY = "makemcp-validation-summary";
 
 export interface ValidationSummary {

@@ -106,7 +106,7 @@ function assertPythonFilesCompile(files: { name: string; content: string }[]): v
     for (const file of pythonFiles) {
         assert.ok(!file.content.includes("\r"), `${file.name} contains a raw carriage return`);
     }
-    const tempDir = mkdtempSync(join(tmpdir(), "makemcp-hardening-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "mcpmint-hardening-"));
     try {
         for (const file of pythonFiles) {
             const target = join(tempDir, file.name);

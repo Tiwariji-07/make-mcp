@@ -3,7 +3,7 @@
   "info": {
     "title": "Petstore API",
     "version": "1.0.0",
-    "description": "A sample Petstore API demonstrating MakeMCP. Manage pets, place orders, and authenticate with an API key or bearer token."
+    "description": "A sample Petstore API demonstrating mcpmint. Manage pets, place orders, and authenticate with an API key or bearer token."
   },
   "servers": [
     { "url": "https://petstore.example.com/api/v1", "description": "Production" }

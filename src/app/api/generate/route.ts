@@ -67,7 +67,7 @@ function isRateLimited(ip: string): boolean {
 // synchronously in the request path (verify.ts) — a trivial DoS. It is gated
 // off unless explicitly enabled on the server (finding R1).
 function isFullVerifyAllowed(): boolean {
-    return process.env.MAKEMCP_ALLOW_FULL_VERIFY === "1";
+    return process.env.MCPMINT_ALLOW_FULL_VERIFY === "1";
 }
 
 // Mirror the request-validation charset so the value placed into the

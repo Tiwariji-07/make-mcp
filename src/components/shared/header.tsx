@@ -60,7 +60,7 @@ export function Header() {
             className="text-base font-semibold tracking-tight"
             style={{ fontFamily: "'Clash Display', sans-serif" }}
           >
-            MAKE<span className="text-primary">MCP</span>
+            mcp<span className="text-primary">mint</span>
           </span>
         </Link>
 
@@ -127,7 +127,7 @@ export function Header() {
           <ThemeToggle />
           <Button variant="ghost" size="icon" asChild>
             <a
-              href="https://github.com/Tiwariji-07/make-mcp"
+              href="https://github.com/mcpmint/mcpmint"
               target="_blank"
               rel="noopener noreferrer"
               className="text-muted-foreground hover:text-primary transition-colors"

@@ -2,7 +2,7 @@ import { ImageResponse } from "next/og";
 
 // Image metadata
 export const alt =
-  "MakeMCP — Bridge APIs to LLM Context. Turn OpenAPI & Postman specs into MCP servers.";
+  "mcpmint — Generate MCP Servers in Your Browser. Your spec never leaves your machine.";
 export const size = {
   width: 1200,
   height: 630,
@@ -43,8 +43,8 @@ export default function OpengraphImage() {
             color: MUTED,
           }}
         >
-          <span style={{ color: ACID }}>~/make-mcp</span>
-          <span style={{ marginLeft: 16 }}>$ npx make-mcp build</span>
+          <span style={{ color: ACID }}>~/mcpmint</span>
+          <span style={{ marginLeft: 16 }}>$ npx mcpmint build</span>
         </div>
 
         {/* Center: brand + tagline */}
@@ -60,8 +60,8 @@ export default function OpengraphImage() {
               lineHeight: 1,
             }}
           >
-            Make
-            <span style={{ color: ACID }}>MCP</span>
+            mcp
+            <span style={{ color: ACID }}>mint</span>
             <span
               style={{
                 display: "flex",
@@ -82,8 +82,8 @@ export default function OpengraphImage() {
               lineHeight: 1.3,
             }}
           >
-            Bridge APIs to LLM Context — turn OpenAPI &amp; Postman specs into
-            MCP servers.
+            Generate MCP servers in your browser — your spec never leaves your
+            machine.
           </div>
         </div>
 
