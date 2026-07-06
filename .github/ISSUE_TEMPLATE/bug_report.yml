@@ -1,0 +1,40 @@
+name: "Bug report (app or CLI)"
+description: Something in the mcpmint web app or CLI is broken — importing, editing, parsing, the UI, etc.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For a server that *generated* but doesn't build or run, use the "Problem with a generated server" template instead.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Import this spec ...
+        2. Toggle ...
+        3. Click Generate ...
+    validations:
+      required: true
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where
+      options: ["Web app (browser)", "CLI (npx mcpmint / pip mcpmint)"]
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: For the web app, your browser + OS. For the CLI, mcpmint version and `node --version`.
+      placeholder: "Chrome 141 on macOS 15  —  or  —  mcpmint 0.1.0 · node v22.3.0"
+    validations:
+      required: false

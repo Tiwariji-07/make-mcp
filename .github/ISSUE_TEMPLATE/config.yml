@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or idea (Discussions)
+    url: https://github.com/mcpmint/mcpmint/discussions
+    about: Ask a question, share how you're using mcpmint, or float an idea before filing an issue.
+  - name: Read the docs
+    url: https://github.com/mcpmint/mcpmint#readme
+    about: Setup, usage, and the CLI are covered in the README.
