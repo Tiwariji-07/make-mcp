@@ -1,45 +1,11 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
-import type { ApiModel } from "@/lib/api-model";
 import { getBodyContentKind, isBinarySchema, isShallowSimpleObjectSchema } from "@/lib/generator/utils";
 
-// Types for parsed API spec
-export interface ParsedParameter {
-    name: string;
-    in: "query" | "path" | "header" | "cookie";
-    required: boolean;
-    type: string;
-    description?: string;
-}
-
-export interface ParsedEndpoint {
-    id: string;
-    method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH";
-    path: string;
-    operationId?: string;
-    summary?: string;
-    description?: string;
-    tags?: string[];
-    parameters: ParsedParameter[];
-    requestBody?: {
-        required: boolean;
-        contentType: string;
-        schema: Record<string, unknown>;
-    };
-}
-
-export interface ParsedSpec {
-    info: {
-        title: string;
-        version: string;
-        description?: string;
-    };
-    baseUrl: string;
-    endpoints: ParsedEndpoint[];
-    securitySchemes: Record<string, unknown>;
-    format?: string;
-    apiModel?: ApiModel;
-}
+// Parsed API spec types now live in the lib layer (api-model). Re-exported here
+// so existing store consumers keep importing them from the store unchanged.
+export type { ParsedParameter, ParsedEndpoint, ParsedSpec } from "@/lib/api-model/parsed-spec";
+import type { ParsedEndpoint, ParsedSpec } from "@/lib/api-model/parsed-spec";
 
 // Tool configuration
 export interface ToolConfig {
@@ -74,6 +40,11 @@ export interface AuthConfig {
     };
 }
 
+export interface McpServerAuthConfig {
+    type: "none" | "bearer";
+    allowedOrigins: string[];
+}
+
 // Server configuration
 export interface ServerConfig {
     name: string;
@@ -89,6 +60,12 @@ export interface ExportConfig {
     framework: "mcp-ts-sdk" | "fastmcp";
     packageManager: "npm" | "pnpm" | "yarn";
     verificationMode: "fast" | "full";
+    // Compact mode (meta-tools). When true the generated server exposes just
+    // three meta-tools (list_api_endpoints / get_api_endpoint_schema /
+    // invoke_api_endpoint) instead of one tool per operation, which keeps large
+    // APIs from bloating the model's context window. Matches the generator's
+    // `compactMode` field on the export config.
+    compactMode: boolean;
     features: {
         documentation: boolean;
         docker: boolean;
@@ -129,6 +106,9 @@ export interface ProjectState {
     // Auth configuration
     authConfig: AuthConfig;
 
+    // MCP server access configuration for HTTP/SSE transports
+    mcpServerAuthConfig: McpServerAuthConfig;
+
     // Server configuration
     serverConfig: ServerConfig;
 
@@ -154,6 +134,7 @@ export interface ProjectState {
 
     // Config actions
     setAuthConfig: (config: AuthConfig) => void;
+    setMcpServerAuthConfig: (config: Partial<McpServerAuthConfig>) => void;
     setServerConfig: (config: Partial<ServerConfig>) => void;
     setExportConfig: (config: ExportConfigUpdate) => void;
 
@@ -442,6 +423,7 @@ const initialState = {
     specFormat: null,
     tools: [],
     authConfig: { type: "none" as const },
+    mcpServerAuthConfig: { type: "none" as const, allowedOrigins: [] },
     serverConfig: {
         name: "my-mcp-server",
         version: "1.0.0",
@@ -454,6 +436,7 @@ const initialState = {
         framework: "mcp-ts-sdk" as const,
         packageManager: "npm" as const,
         verificationMode: "fast" as const,
+        compactMode: false,
         features: {
             documentation: true,
             docker: false,
@@ -479,10 +462,49 @@ function normalizeExportConfig(
     };
 }
 
+function normalizeMcpServerAuthConfig(
+    config?: Partial<McpServerAuthConfig> | null
+): McpServerAuthConfig {
+    return {
+        type: config?.type === "bearer" ? "bearer" : "none",
+        allowedOrigins: Array.isArray(config?.allowedOrigins)
+            ? config.allowedOrigins.map((origin) => origin.trim()).filter(Boolean)
+            : [],
+    };
+}
+
 // Generate unique ID
 function generateId(): string {
     return Math.random().toString(36).substring(2, 9);
 }
+
+// localStorage-backed storage that fails gracefully when a very large spec
+// exceeds the quota, so persistence never throws and breaks the app.
+const safeLocalStorage = {
+    getItem: (name: string): string | null => {
+        try {
+            return localStorage.getItem(name);
+        } catch {
+            return null;
+        }
+    },
+    setItem: (name: string, value: string): void => {
+        try {
+            localStorage.setItem(name, value);
+        } catch (e) {
+            // Quota exceeded (e.g. an oversized spec) or storage unavailable.
+            // Keep the in-memory session working; just skip persistence.
+            console.warn("makemcp: unable to persist session (storage full or unavailable)", e);
+        }
+    },
+    removeItem: (name: string): void => {
+        try {
+            localStorage.removeItem(name);
+        } catch {
+            /* no-op */
+        }
+    },
+};
 
 export const useProjectStore = create<ProjectState>()(
     persist(
@@ -535,6 +557,13 @@ export const useProjectStore = create<ProjectState>()(
 
             setAuthConfig: (config) => set({ authConfig: config }),
 
+            setMcpServerAuthConfig: (config) => set((state) => ({
+                mcpServerAuthConfig: normalizeMcpServerAuthConfig({
+                    ...state.mcpServerAuthConfig,
+                    ...config,
+                }),
+            })),
+
             setServerConfig: (config) => set((state) => ({
                 serverConfig: { ...state.serverConfig, ...config },
             })),
@@ -571,6 +600,7 @@ export const useProjectStore = create<ProjectState>()(
                             spec: state.spec,
                             tools: state.tools,
                             authConfig: state.authConfig,
+                            mcpServerAuthConfig: state.mcpServerAuthConfig,
                             serverConfig: state.serverConfig,
                             exportConfig: state.exportConfig,
                         })
@@ -590,7 +620,14 @@ export const useProjectStore = create<ProjectState>()(
                     const data = localStorage.getItem(`makemcp-project-${id}`);
                     if (!data) return;
 
-                    const { spec, tools, authConfig, serverConfig, exportConfig } = JSON.parse(data);
+                    const { spec, tools, authConfig, mcpServerAuthConfig, serverConfig, exportConfig } = JSON.parse(data);
+
+                    // Projects saved before the canonical migration lack
+                    // spec.apiModel, which generation now requires.
+                    if (!spec?.apiModel) {
+                        set({ error: "This saved project was created by an older version of MakeMCP. Re-import the spec to continue." });
+                        return;
+                    }
 
                     set({
                         spec,
@@ -598,6 +635,7 @@ export const useProjectStore = create<ProjectState>()(
                         specFormat: spec?.format || "openapi",
                         tools: Array.isArray(tools) ? tools.map(sanitizeToolConfig) : [],
                         authConfig,
+                        mcpServerAuthConfig: normalizeMcpServerAuthConfig(mcpServerAuthConfig),
                         serverConfig,
                         exportConfig: normalizeExportConfig(exportConfig),
                         currentStep: "editor",
@@ -644,23 +682,65 @@ export const useProjectStore = create<ProjectState>()(
         }),
         {
             name: "makemcp-storage",
-            storage: createJSONStorage(() => localStorage),
+            storage: createJSONStorage(() => safeLocalStorage),
+            // v2: the generator requires spec.apiModel (the canonical path is the
+            // only path). Sessions persisted before the canonical migration have a
+            // spec without apiModel and would throw deep inside generation, so
+            // migrate drops the stale working session and keeps only config/history.
+            version: 2,
+            migrate: (persistedState, version) => {
+                const persisted = (persistedState as PersistedProjectState | undefined) || {};
+
+                if (version < 2 && persisted.spec && !persisted.spec.apiModel) {
+                    return {
+                        ...persisted,
+                        spec: null,
+                        specSource: null,
+                        specFormat: null,
+                        tools: [],
+                        currentStep: "import" as const,
+                    };
+                }
+
+                return persisted;
+            },
             merge: (persistedState, currentState) => {
                 const persisted = (persistedState as PersistedProjectState | undefined) || {};
+
+                const spec = persisted.spec ?? currentState.spec;
 
                 return {
                     ...currentState,
                     ...persisted,
+                    // Restore the in-progress working session if one was persisted.
+                    spec,
+                    tools: Array.isArray(persisted.tools)
+                        ? persisted.tools.map(sanitizeToolConfig)
+                        : currentState.tools,
+                    authConfig: persisted.authConfig ?? currentState.authConfig,
+                    serverConfig: persisted.serverConfig ?? currentState.serverConfig,
+                    // Only trust a persisted step when there is actually a spec to resume.
+                    currentStep: spec ? (persisted.currentStep ?? currentState.currentStep) : "import",
                     exportConfig: normalizeExportConfig(persisted.exportConfig),
+                    mcpServerAuthConfig: normalizeMcpServerAuthConfig(persisted.mcpServerAuthConfig),
                     savedProjects: Array.isArray(persisted.savedProjects)
                         ? persisted.savedProjects
                         : currentState.savedProjects,
                 };
             },
             partialize: (state) => ({
-                // Only persist these fields
+                // Persisted config + history
                 savedProjects: state.savedProjects,
                 exportConfig: state.exportConfig,
+                // In-progress working session so a refresh mid-edit restores the user's work.
+                spec: state.spec,
+                specSource: state.specSource,
+                specFormat: state.specFormat,
+                tools: state.tools,
+                authConfig: state.authConfig,
+                mcpServerAuthConfig: state.mcpServerAuthConfig,
+                serverConfig: state.serverConfig,
+                currentStep: state.currentStep,
             }),
         }
     )

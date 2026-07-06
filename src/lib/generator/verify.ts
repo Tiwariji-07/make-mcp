@@ -116,9 +116,15 @@ function hasGeneratedTests(project: GeneratedProject): boolean {
     return Array.from(project.files.keys()).some((filePath) => filePath.startsWith("tests/"));
 }
 
+// Detect leftover Mustache/Handlebars-style placeholders (e.g. `{{serverName}}`).
+// Matches a `{{ ... }}` pair whose body is a placeholder token, not arbitrary adjacent
+// braces — emitted code legitimately contains `}}` (nested JSON/dict/object literals),
+// which must not be flagged.
+const TEMPLATE_PLACEHOLDER_PATTERN = /\{\{\s*[\w.$-]+\s*\}\}/;
+
 function verifyNoTemplateArtifacts(project: GeneratedProject): VerificationCheck {
     for (const [filePath, content] of project.files) {
-        if (content.includes("{{") || content.includes("}}")) {
+        if (TEMPLATE_PLACEHOLDER_PATTERN.test(content)) {
             return {
                 name: "template-artifacts",
                 status: "failed",
@@ -174,8 +180,9 @@ declare const process: {
   env: Record<string, string | undefined>;
 };
 declare const Buffer: {
-  from(value: string): {
+  from(value: string, encoding?: string): {
     toString(encoding: string): string;
+    length: number;
   };
 };
 
@@ -183,6 +190,7 @@ declare module "@modelcontextprotocol/sdk/server/mcp.js" {
   export class McpServer {
     constructor(config: unknown);
     tool(...args: unknown[]): void;
+    registerTool(name: string, config: unknown, handler: (...args: any[]) => unknown): void;
     connect(transport: unknown): Promise<void>;
   }
 }
@@ -241,6 +249,10 @@ declare module "node:fs" {
 
 declare module "node:path" {
   export function resolve(...args: any[]): string;
+}
+
+declare module "node:crypto" {
+  export function timingSafeEqual(a: any, b: any): boolean;
 }
 `, "utf8");
 
@@ -414,7 +426,11 @@ function verifyNodeProjectFull(project: GeneratedProject): VerificationCheck[] {
 function createPythonImportStubs(tempDir: string) {
     const srcDir = join(tempDir, "src");
 
-    writeFileSync(join(srcDir, "fastmcp.py"), `class FastMCP:
+    // `fastmcp` is stubbed as a package so that both `from fastmcp import FastMCP` and
+    // `from fastmcp.exceptions import ToolError` resolve during the import smoke test.
+    const fastmcpDir = join(srcDir, "fastmcp");
+    mkdirSync(fastmcpDir, { recursive: true });
+    writeFileSync(join(fastmcpDir, "__init__.py"), `class FastMCP:
     def __init__(self, name):
         self.name = name
 
@@ -423,8 +439,25 @@ function createPythonImportStubs(tempDir: string) {
             return function
         return decorator
 
+    def http_app(self, *args, **kwargs):
+        return None
+
     def run(self, *args, **kwargs):
         return None
+`, "utf8");
+
+    writeFileSync(join(fastmcpDir, "exceptions.py"), `class ToolError(Exception):
+    pass
+`, "utf8");
+
+    // `mcp.types.ToolAnnotations` is imported by the generated server module.
+    const mcpDir = join(srcDir, "mcp");
+    mkdirSync(mcpDir, { recursive: true });
+    writeFileSync(join(mcpDir, "__init__.py"), "", "utf8");
+    writeFileSync(join(mcpDir, "types.py"), `class ToolAnnotations:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
 `, "utf8");
 
     writeFileSync(join(srcDir, "httpx.py"), `class Response:

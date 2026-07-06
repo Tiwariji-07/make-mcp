@@ -1,31 +1,12 @@
 import type {
     GenerationFeatureFlags,
     GeneratorExportConfig,
-    GeneratorToolParameter,
     GeneratorToolConfig,
     ParamLocation,
     RequestBodyContentKind,
     Transport,
     TransportStrategy,
 } from "./types.ts";
-
-export function parseEndpointId(id: string): { method: string; path: string } {
-    if (id.includes("::")) {
-        const [method, path] = id.split("::");
-        return { method, path };
-    }
-
-    const postmanMatch = id.match(/^(GET|POST|PUT|DELETE|PATCH)-(.+)-(\d+)$/);
-    if (postmanMatch) {
-        return {
-            method: postmanMatch[1],
-            path: postmanMatch[2],
-        };
-    }
-
-    const [method, ...pathParts] = id.split("-");
-    return { method, path: pathParts.join("-") };
-}
 
 export function toSafeIdentifier(value: string, fallback: string): string {
     const normalized = value
@@ -75,32 +56,16 @@ export function toJsStringLiteral(str: string): string {
 export function toPythonStringLiteral(str: string): string {
     if (!str) return '""';
 
+    // \r must be escaped: Python treats a raw carriage return as a line
+    // terminator, so a CRLF inside a single-line "..." literal is a SyntaxError.
     const escaped = str
         .replace(/\\/g, "\\\\")
         .replace(/"/g, '\\"')
-        .replace(/\n/g, "\\n");
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r")
+        .replace(/\t/g, "\\t");
 
     return `"${escaped}"`;
-}
-
-export function getParameterLocation(
-    parameter: GeneratorToolParameter,
-    path: string,
-    method: string
-): ParamLocation {
-    if (parameter.location) {
-        return parameter.location;
-    }
-
-    if (path.includes(`{${parameter.originalName || parameter.name}}`)) {
-        return "path";
-    }
-
-    if (["POST", "PUT", "PATCH"].includes(method)) {
-        return "body";
-    }
-
-    return "query";
 }
 
 function hasSchemaComposition(schema: Record<string, unknown>): boolean {

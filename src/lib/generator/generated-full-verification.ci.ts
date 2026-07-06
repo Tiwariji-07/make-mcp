@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { buildOpenAPIModel } from "../api-model/openapi.ts";
 import { createPreviewResponse, type GeneratorRequest } from "./index.ts";
 
 function assertFullVerificationPassed(preview: ReturnType<typeof createPreviewResponse>) {
@@ -19,6 +20,51 @@ function assertFullVerificationPassed(preview: ReturnType<typeof createPreviewRe
     );
 }
 
+const generatedNodeApiModel = buildOpenAPIModel({
+    openapi: "3.1.0",
+    info: {
+        title: "CI Billing API",
+        version: "1.0.0",
+        description: "CI fixture for generated Node project verification",
+    },
+    servers: [{ url: "https://api.example.com" }],
+    paths: {
+        "/customers": {
+            post: {
+                operationId: "create-customer",
+                summary: "Create a customer",
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                properties: {
+                                    email: { type: "string", format: "email" },
+                                    accountId: { type: "string" },
+                                },
+                                required: ["email"],
+                            },
+                        },
+                    },
+                },
+                responses: { "201": { description: "Created" } },
+            },
+        },
+        "/customers/{customerId}": {
+            get: {
+                operationId: "get-customer",
+                summary: "Fetch a customer",
+                parameters: [
+                    { name: "customerId", in: "path", required: true, description: "Customer id", schema: { type: "string" } },
+                    { name: "include", in: "query", required: false, description: "Related resources to include", schema: { type: "array", items: { type: "string" } } },
+                ],
+                responses: { "200": { description: "OK" } },
+            },
+        },
+    },
+});
+
 const generatedNodeSample: GeneratorRequest = {
     spec: {
         info: {
@@ -27,6 +73,7 @@ const generatedNodeSample: GeneratorRequest = {
             description: "CI fixture for generated Node project verification",
         },
         baseUrl: "https://api.example.com",
+        apiModel: generatedNodeApiModel,
     },
     tools: [
         {
@@ -115,6 +162,51 @@ const generatedNodeSample: GeneratorRequest = {
     },
 };
 
+const generatedPythonApiModel = buildOpenAPIModel({
+    openapi: "3.1.0",
+    info: {
+        title: "CI Orders API",
+        version: "1.0.0",
+        description: "CI fixture for generated Python project verification",
+    },
+    servers: [{ url: "https://orders.example.com" }],
+    paths: {
+        "/orders/{orderId}": {
+            get: {
+                operationId: "get-order",
+                summary: "Fetch an order",
+                parameters: [
+                    { name: "orderId", in: "path", required: true, description: "Order id", schema: { type: "string" } },
+                    { name: "X-Trace-Id", in: "header", required: false, description: "Trace header", schema: { type: "string" } },
+                ],
+                responses: { "200": { description: "OK" } },
+            },
+            patch: {
+                operationId: "update-order",
+                summary: "Update an order",
+                parameters: [
+                    { name: "orderId", in: "path", required: true, description: "Order id", schema: { type: "string" } },
+                ],
+                requestBody: {
+                    required: true,
+                    content: {
+                        "application/json": {
+                            schema: {
+                                type: "object",
+                                properties: {
+                                    status: { type: "string", enum: ["open", "closed"] },
+                                },
+                                required: ["status"],
+                            },
+                        },
+                    },
+                },
+                responses: { "200": { description: "OK" } },
+            },
+        },
+    },
+});
+
 const generatedPythonSample: GeneratorRequest = {
     spec: {
         info: {
@@ -123,6 +215,7 @@ const generatedPythonSample: GeneratorRequest = {
             description: "CI fixture for generated Python project verification",
         },
         baseUrl: "https://orders.example.com",
+        apiModel: generatedPythonApiModel,
     },
     tools: [
         {

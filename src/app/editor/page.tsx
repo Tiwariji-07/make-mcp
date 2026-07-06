@@ -1,16 +1,30 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown } from "lucide-react";
+import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown, AlertTriangle, X, Layers } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { useProjectStore, ParsedEndpoint } from "@/store/project-store";
+import {
+  buildEndpointWarnings,
+  consumeValidationSummary,
+  type ValidationSummary,
+} from "@/lib/parsers/openapi";
+import type { ValidationMessage } from "@/lib/parsers/openapi";
+import {
+  estimateToolDefinitionTokens,
+  estimateCompactModeTokens,
+  formatTokens,
+  type BudgetBand,
+} from "@/lib/token-estimate";
 
 export default function EditorPage() {
   const router = useRouter();
@@ -21,15 +35,43 @@ export default function EditorPage() {
     toggleAllTools,
     updateToolConfig,
     setCurrentStep,
+    exportConfig,
+    setExportConfig,
   } = useProjectStore();
+
+  const compactMode = exportConfig.compactMode;
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedMethodFilters, setSelectedMethodFilters] = useState<string[]>([]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Pick up the one-time validation summary stashed by the import step. Lazy
+  // initializer so the read-and-clear happens exactly once on mount (guarded
+  // against SSR inside consumeValidationSummary).
+  const [validationSummary] = useState<ValidationSummary | null>(() => consumeValidationSummary());
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   useEffect(() => {
     if (!spec) router.push("/");
   }, [spec, router]);
+
+  // Index per-endpoint validation warnings ("METHOD /path" -> messages).
+  // Recomputed only when the spec changes, so it's cheap during interaction.
+  const endpointWarnings = useMemo(
+    () => (spec ? buildEndpointWarnings(spec) : new Map<string, ValidationMessage[]>()),
+    [spec]
+  );
+
+  // Live context-budget estimate. In compact mode the model only ever sees the
+  // three fixed meta-tools, so the cost is constant regardless of how many
+  // endpoints are enabled — we swap in the compact estimate. Otherwise it is
+  // the sum of every enabled tool's definition. Recomputes whenever a tool
+  // toggles or its config changes, since `tools` is a fresh array each time.
+  const fullBudget = useMemo(() => estimateToolDefinitionTokens(tools), [tools]);
+  const compactBudget = useMemo(
+    () => estimateCompactModeTokens(fullBudget.enabledCount),
+    [fullBudget.enabledCount]
+  );
+  const budget = compactMode ? compactBudget : fullBudget;
 
   if (!spec) return null;
 
@@ -57,6 +99,50 @@ export default function EditorPage() {
       <Header />
 
       <main className="pt-14 flex-1 flex flex-col relative z-10">
+        {/* Validation summary banner (one-time, from the import step) */}
+        {validationSummary && !bannerDismissed && (
+          <div
+            className={`border-b ${
+              validationSummary.errorCount > 0
+                ? "border-red/40 bg-red/[0.06]"
+                : validationSummary.warningCount > 0
+                  ? "border-amber/40 bg-amber/[0.06]"
+                  : "border-green/40 bg-green/[0.06]"
+            }`}
+          >
+            <div className="max-w-[1400px] mx-auto px-6 py-2.5 flex items-start gap-3">
+              <AlertTriangle
+                className={`w-4 h-4 mt-0.5 shrink-0 ${
+                  validationSummary.errorCount > 0
+                    ? "text-red"
+                    : validationSummary.warningCount > 0
+                      ? "text-amber"
+                      : "text-green"
+                }`}
+              />
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-semibold">{validationSummary.headline}</p>
+                {validationSummary.notable.length > 0 && (
+                  <ul className="mt-1 space-y-0.5">
+                    {validationSummary.notable.map((item, i) => (
+                      <li key={i} className="text-[11px] text-muted-foreground truncate">
+                        · {item}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <button
+                onClick={() => setBannerDismissed(true)}
+                className="text-muted-foreground hover:text-foreground shrink-0"
+                aria-label="Dismiss"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Toolbar */}
         <div className="border-b border-border bg-surface sticky top-14 z-20">
           <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4 flex-wrap">
@@ -123,6 +209,7 @@ export default function EditorPage() {
               if (!tool) return null;
               const isExpanded = expandedId === ep.id;
               const visibleParamCount = tool.parameters.filter((param) => !param.hidden).length;
+              const warnings = endpointWarnings.get(`${ep.method} ${ep.path}`) ?? [];
 
               return (
                 <div key={ep.id} className="border-b border-border">
@@ -151,7 +238,31 @@ export default function EditorPage() {
 
                     {/* Path */}
                     <div className="min-w-0">
-                      <code className="text-xs truncate block">{ep.path}</code>
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <code className="text-xs truncate">{ep.path}</code>
+                        {warnings.length > 0 && (
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span
+                                onClick={(e) => e.stopPropagation()}
+                                className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-amber/10 border border-amber/40 text-amber text-[9px] font-semibold tracking-wider uppercase cursor-help"
+                              >
+                                <AlertTriangle className="w-2.5 h-2.5" />
+                                {warnings.length}
+                              </span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-xs text-left">
+                              <ul className="space-y-1">
+                                {warnings.map((w, i) => (
+                                  <li key={i} className="text-[11px] leading-snug">
+                                    {w.message}
+                                  </li>
+                                ))}
+                              </ul>
+                            </TooltipContent>
+                          </Tooltip>
+                        )}
+                      </div>
                       {ep.summary && (
                         <span className="text-[10px] text-muted-foreground truncate block mt-0.5">
                           {ep.summary}
@@ -297,7 +408,7 @@ export default function EditorPage() {
           <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
             <Button
               variant="ghost"
-              onClick={() => { setCurrentStep("import"); router.push("/"); }}
+              onClick={() => { setCurrentStep("import"); router.push("/import"); }}
               className="text-xs text-muted-foreground hover:text-foreground"
             >
               <ArrowLeft className="w-3.5 h-3.5 mr-2" />
@@ -305,6 +416,98 @@ export default function EditorPage() {
             </Button>
 
             <div className="flex items-center gap-6">
+              {/* Compact mode toggle */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <label
+                    className={`flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-pointer transition-colors ${
+                      compactMode
+                        ? "border-primary/50 bg-primary/[0.08] text-primary"
+                        : "border-border text-muted-foreground hover:text-foreground"
+                    }`}
+                  >
+                    <Layers className="w-3.5 h-3.5 shrink-0" aria-hidden />
+                    <span className="text-[11px] tracking-wider uppercase font-semibold">
+                      Compact
+                    </span>
+                    <Switch
+                      checked={compactMode}
+                      onCheckedChange={(checked) => setExportConfig({ compactMode: checked })}
+                      aria-label="Compact mode"
+                      className="ml-0.5"
+                    />
+                  </label>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs text-left">
+                  <p className="text-[11px] leading-snug">
+                    Compact mode exposes just 3 meta-tools
+                    (<code>list_api_endpoints</code>, <code>get_api_endpoint_schema</code>,{" "}
+                    <code>invoke_api_endpoint</code>) instead of one tool per operation.
+                  </p>
+                  <p className="text-[10px] leading-snug mt-1.5 opacity-70">
+                    The model discovers and calls endpoints on demand, so a large API
+                    costs a tiny, constant amount of context instead of ballooning with
+                    every enabled tool.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+
+              {/* Context-budget meter */}
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span
+                    className={`flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-help ${budgetClasses(budget.band)}`}
+                  >
+                    <span
+                      className={`w-1.5 h-1.5 rounded-full shrink-0 ${budgetDotClasses(budget.band)}`}
+                      aria-hidden
+                    />
+                    <span className="text-[11px] tracking-wider uppercase font-semibold tabular-nums">
+                      ~{formatTokens(budget.totalTokens)}
+                    </span>
+                    <span className="text-[10px] tracking-wider uppercase opacity-70">
+                      ctx tokens
+                    </span>
+                    {compactMode ? (
+                      <span className="text-[10px] tracking-wide normal-case opacity-90 hidden sm:inline">
+                        · 3 meta-tools
+                      </span>
+                    ) : budget.band === "red" ? (
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setExportConfig({ compactMode: true });
+                        }}
+                        className="text-[10px] tracking-wide normal-case opacity-90 underline underline-offset-2 hover:opacity-100 hidden sm:inline"
+                      >
+                        · Large tool set — try Compact mode
+                      </button>
+                    ) : null}
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent className="max-w-xs text-left">
+                  <p className="text-[11px] leading-snug">
+                    Roughly how much of the model&apos;s context window your tool list
+                    occupies before any real work. Fewer, well-described tools = better
+                    agent accuracy.
+                  </p>
+                  {compactMode ? (
+                    <p className="text-[10px] leading-snug mt-1.5 opacity-70">
+                      Compact mode is on: just 3 meta-tools reach all{" "}
+                      {budget.enabledCount} enabled endpoint
+                      {budget.enabledCount !== 1 ? "s" : ""} on demand (~1 token / 4 chars
+                      of tool JSON).
+                    </p>
+                  ) : (
+                    <p className="text-[10px] leading-snug mt-1.5 opacity-70">
+                      Estimated across {budget.enabledCount} enabled tool
+                      {budget.enabledCount !== 1 ? "s" : ""} (~1 token / 4 chars of tool JSON).
+                    </p>
+                  )}
+                </TooltipContent>
+              </Tooltip>
+
               <span className="text-xs text-muted-foreground">
                 <span className="text-primary font-semibold">{selectedCount}</span>
                 <span className="mx-1">/</span>
@@ -337,6 +540,24 @@ function getMethodClasses(method: ParsedEndpoint["method"]): string {
     DELETE: "method-delete",
   };
   return m[method] || "";
+}
+
+function budgetClasses(band: BudgetBand): string {
+  const c: Record<BudgetBand, string> = {
+    green: "border-green/40 bg-green/[0.06] text-green",
+    amber: "border-amber/40 bg-amber/[0.06] text-amber",
+    red: "border-red/40 bg-red/[0.08] text-red",
+  };
+  return c[band];
+}
+
+function budgetDotClasses(band: BudgetBand): string {
+  const c: Record<BudgetBand, string> = {
+    green: "bg-green",
+    amber: "bg-amber",
+    red: "bg-red",
+  };
+  return c[band];
 }
 
 function getLocationClasses(loc: string): string {

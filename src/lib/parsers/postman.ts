@@ -1,4 +1,4 @@
-import type { ParsedSpec } from "../../store/project-store";
+import type { ParsedSpec } from "../api-model/parsed-spec.ts";
 import { buildPostmanApiModel, type PostmanBuildOptions, type PostmanCollection } from "../api-model/postman.ts";
 import { apiModelToParsedSpec } from "../api-model/legacy.ts";
 

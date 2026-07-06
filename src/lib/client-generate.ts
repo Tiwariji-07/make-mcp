@@ -1,0 +1,104 @@
+// Browser-safe project generation + zip.
+//
+// The server path (src/app/api/generate/route.ts -> @/lib/generator index.ts)
+// pulls in archive.ts, which imports `archiver` (a Node-only module backed by
+// fs/streams). It also transitively reaches verify.ts, which imports node:fs,
+// node:child_process, etc. Neither can run in — or be bundled into — the
+// browser.
+//
+// To keep the client bundle free of Node-only modules, this file deliberately
+// does NOT import from @/lib/generator (the index that re-exports archive.ts).
+// Instead it imports only the PURE generator pieces directly:
+//   - buildGenerationPlan  (normalize.ts)   -> plan
+//   - validateGenerationPlan (validate.ts)  -> validation
+//   - generateNodeProject / generatePythonProject (targets/*) -> file map
+//   - parseGeneratorRequestPayload (request.ts, Zod) -> input validation
+// It then zips the in-memory file map with fflate (zipSync + strToU8), which is
+// a tiny pure-JS zip implementation with no Node dependencies.
+
+import { zipSync, strToU8 } from "fflate";
+import { buildGenerationPlan } from "@/lib/generator/normalize";
+import { validateGenerationPlan } from "@/lib/generator/validate";
+import { parseGeneratorRequestPayload } from "@/lib/generator/request";
+import { generateNodeProject } from "@/lib/generator/targets/node";
+import { generatePythonProject } from "@/lib/generator/targets/python";
+import type {
+  GeneratedProject,
+  GeneratorRequest,
+  ValidationResult,
+} from "@/lib/generator/types";
+
+// Mirrors archive.ts sanitizeRootFolder so the browser-produced zip has the
+// exact same root folder as the server-produced one. Defense-in-depth against
+// Zip Slip / path traversal via the user-controlled server name.
+function sanitizeRootFolder(rootFolder: string): string {
+  const cleaned = rootFolder
+    .replace(/[\\/]+/g, "-")
+    .replace(/\.\.+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "-")
+    .replace(/^[.-]+/, "")
+    .slice(0, 64);
+
+  return cleaned.length > 0 ? cleaned : "mcp-server";
+}
+
+// Mirrors index.ts generateProject: pick the target by runtime language.
+function generateProject(plan: ReturnType<typeof buildGenerationPlan>): GeneratedProject {
+  return plan.runtime.language === "node"
+    ? generateNodeProject(plan)
+    : generatePythonProject(plan);
+}
+
+export interface ClientGenerationResult {
+  blob: Blob;
+  filename: string;
+  project: GeneratedProject;
+  validation: ValidationResult;
+}
+
+/**
+ * Generate the MCP server project entirely in the browser and return a
+ * downloadable zip Blob. Takes the SAME payload shape the server route accepts
+ * (validated via the shared Zod schema). No Node APIs, no network calls — the
+ * spec never leaves the browser.
+ *
+ * Note: post-generation verification (verify.ts) is intentionally NOT run here
+ * — it shells out to tsc / npm / python and cannot run in the browser. Full
+ * verification remains a server-only capability.
+ */
+export function generateProjectInBrowser(payload: unknown): ClientGenerationResult {
+  // Validate + normalize the payload with the same schema the server uses, so
+  // browser and server produce identical output for identical input.
+  const request: GeneratorRequest = parseGeneratorRequestPayload(payload);
+
+  const plan = buildGenerationPlan(request);
+  const validation = validateGenerationPlan(plan);
+  if (validation.errors.length > 0) {
+    throw new Error(validation.errors.map((error) => error.message).join("\n"));
+  }
+
+  const project = generateProject(plan);
+
+  const rootFolder = sanitizeRootFolder(request.serverConfig.name);
+
+  // fflate zipSync takes a nested/flat map of path -> Uint8Array. We prefix
+  // every file with the sanitized root folder to match the server archive
+  // layout (rootFolder/<file>).
+  const zipInput: Record<string, Uint8Array> = {};
+  for (const [filePath, content] of project.files) {
+    zipInput[`${rootFolder}/${filePath}`] = strToU8(content);
+  }
+
+  const zipped = zipSync(zipInput, { level: 9 });
+
+  // Copy into a fresh ArrayBuffer-backed view so the Blob owns a plain
+  // ArrayBuffer (avoids SharedArrayBuffer typing friction with BlobPart).
+  const blob = new Blob([zipped.slice()], { type: "application/zip" });
+
+  return {
+    blob,
+    filename: `${rootFolder}.zip`,
+    project,
+    validation,
+  };
+}

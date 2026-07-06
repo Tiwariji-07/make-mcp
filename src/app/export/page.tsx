@@ -17,7 +17,12 @@ import {
   FileText,
   ShieldCheck,
   XCircle,
+  PartyPopper,
+  Github,
+  Lock,
+  Settings2,
 } from "lucide-react";
+import Link from "next/link";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,8 +38,9 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/ui/copy-button";
-import { AuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
+import { AuthConfig, ExportConfig, McpServerAuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
 import { buildToolPlans } from "@/lib/generator/planner";
+import { generateProjectInBrowser } from "@/lib/client-generate";
 
 interface PreviewFile {
   name: string;
@@ -83,6 +89,7 @@ interface EndpointReviewItem {
 }
 
 type AuthType = AuthConfig["type"];
+type McpServerAuthType = McpServerAuthConfig["type"];
 type Transport = ServerConfig["transport"];
 
 const defaultExportFeatures = {
@@ -195,6 +202,131 @@ function formatAuthConfig(config: AuthConfig): string {
   return getAuthLabel(config.type);
 }
 
+function formatMcpServerAuthConfig(config: McpServerAuthConfig, transport: Transport, language: ExportConfig["language"]): string {
+  if (transport === "stdio") return "Not applicable";
+  const auth = language === "python"
+    ? config.type === "bearer" ? "Bearer placeholder" : "No generated enforcement"
+    : config.type === "bearer" ? "Bearer via MCP_AUTH_TOKEN" : "None";
+  const origins = config.allowedOrigins.length > 0 ? `${config.allowedOrigins.length} origin${config.allowedOrigins.length === 1 ? "" : "s"}` : "any origin";
+  return `${auth} · ${origins}`;
+}
+
+const GITHUB_REPO_URL = "https://github.com/Tiwariji-07/make-mcp";
+
+// Snapshot of the exact config used for a completed generation, so the success
+// screen stays correct even if the user tweaks fields afterwards.
+interface GeneratedSnapshot {
+  serverName: string;
+  language: ExportConfig["language"];
+  packageManager: ExportConfig["packageManager"];
+  transport: Transport;
+  host: string;
+  port: number;
+  authType: AuthType;
+  apiKeyName?: string;
+  baseUrl: string;
+  compactMode: boolean;
+  toolCount: number;
+}
+
+// Mirrors readme.ts getTransportUrl: stdio has no URL; SSE gets /sse suffix.
+function getSnapshotTransportUrl(snapshot: GeneratedSnapshot): string {
+  if (snapshot.transport === "stdio") return "";
+  if (snapshot.transport === "sse") return `http://${snapshot.host}:${snapshot.port}/sse`;
+  return `http://${snapshot.host}:${snapshot.port}`;
+}
+
+// Mirrors targets/node.ts + targets/python.ts renderReadme(): the stdio client
+// command/args the generator ships in the README's Example MCP Client Config.
+function getSnapshotStdioClient(snapshot: GeneratedSnapshot): { command: string; args: string[] } {
+  if (snapshot.language === "python") {
+    return { command: "python", args: ["src/server.py"] };
+  }
+  return { command: "node", args: ["dist/src/index.js"] };
+}
+
+// Mirrors readme.ts getClientConfigEnv() for the single upstream-auth scheme the
+// UI configures. Env var names follow the generator's single-scheme fast path
+// (schemeName "apiKey"/"bearer"/"basic"); the generated .env.example / README is
+// the source of truth for multi-scheme specs.
+function getSnapshotClientEnv(snapshot: GeneratedSnapshot): Record<string, string> {
+  const env: Record<string, string> = {
+    API_BASE_URL: snapshot.baseUrl || "https://api.example.com",
+  };
+
+  if (snapshot.authType === "apiKey") {
+    env.API_KEY = "your_api_key_here";
+  } else if (snapshot.authType === "bearer") {
+    env.BEARER_TOKEN = "your_token_here";
+  } else if (snapshot.authType === "basic") {
+    env.BASIC_USERNAME = "your_username";
+    env.BASIC_PASSWORD = "your_password";
+  }
+
+  return env;
+}
+
+// Mirrors readme.ts renderClientConfig(): the mcpServers JSON block that ships in
+// the generated README. stdio uses command/args/env; HTTP/SSE uses a url.
+function buildMcpServersConfig(snapshot: GeneratedSnapshot): string {
+  const serverKey = snapshot.serverName;
+
+  if (snapshot.transport === "stdio") {
+    const { command, args } = getSnapshotStdioClient(snapshot);
+    return JSON.stringify(
+      {
+        mcpServers: {
+          [serverKey]: {
+            command,
+            args,
+            env: getSnapshotClientEnv(snapshot),
+          },
+        },
+      },
+      null,
+      2,
+    );
+  }
+
+  return JSON.stringify(
+    {
+      mcpServers: {
+        [serverKey]: {
+          url: getSnapshotTransportUrl(snapshot),
+        },
+      },
+    },
+    null,
+    2,
+  );
+}
+
+// Cursor's mcp.json uses the same mcpServers shape as Claude Desktop.
+function buildCursorConfig(snapshot: GeneratedSnapshot): string {
+  return buildMcpServersConfig(snapshot);
+}
+
+// `claude mcp add` CLI form. For stdio the server entry is `-- <command> <args>`;
+// for HTTP/SSE it is `--transport <t> <url>`.
+function buildClaudeCliCommand(snapshot: GeneratedSnapshot): string {
+  if (snapshot.transport === "stdio") {
+    const { command, args } = getSnapshotStdioClient(snapshot);
+    return `claude mcp add ${snapshot.serverName} -- ${command} ${args.join(" ")}`;
+  }
+  const transportFlag = snapshot.transport === "sse" ? "sse" : "http";
+  return `claude mcp add --transport ${transportFlag} ${snapshot.serverName} ${getSnapshotTransportUrl(snapshot)}`;
+}
+
+function getInstallCommand(snapshot: GeneratedSnapshot): string {
+  if (snapshot.language === "python") return "pip install -e .";
+  return `${snapshot.packageManager} install`;
+}
+
+function getRunCommand(snapshot: GeneratedSnapshot): string {
+  if (snapshot.language === "python") return "python src/server.py";
+  return snapshot.packageManager === "npm" ? "npm run dev" : `${snapshot.packageManager} dev`;
+}
+
 export default function ExportPage() {
   const router = useRouter();
   const {
@@ -203,9 +335,11 @@ export default function ExportPage() {
     serverConfig,
     exportConfig,
     authConfig,
+    mcpServerAuthConfig,
     setServerConfig,
     setExportConfig,
     setAuthConfig,
+    setMcpServerAuthConfig,
     setCurrentStep,
     saveCurrentProject,
   } = useProjectStore();
@@ -216,6 +350,11 @@ export default function ExportPage() {
   const [previewData, setPreviewData] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [portValue, setPortValue] = useState(serverConfig.port.toString());
+  const [generated, setGenerated] = useState<GeneratedSnapshot | null>(null);
+  // Privacy mode: generate entirely in the browser so the spec never leaves the
+  // machine. Default ON. Switching off uses the server route, which is required
+  // for full install/build verification (impossible in-browser).
+  const [browserMode, setBrowserMode] = useState(true);
 
   useEffect(() => {
     if (!spec) router.push("/");
@@ -235,12 +374,13 @@ export default function ExportPage() {
       baseUrl: spec.baseUrl,
       apiModel: spec.apiModel,
     },
+    // Schemas are always derived from spec.apiModel (the generator's sole
+    // supported path), so tool/parameter schema blobs are not sent.
     tools: selectedTools.map((tool) => ({
       endpointId: tool.endpointId,
       enabled: tool.enabled,
       toolName: tool.toolName,
       description: tool.description,
-      bodySchema: spec.apiModel ? undefined : tool.bodySchema,
       bodyContentType: tool.bodyContentType,
       parameters: tool.parameters.map((parameter) => ({
         name: parameter.name,
@@ -249,12 +389,12 @@ export default function ExportPage() {
         required: parameter.required,
         description: parameter.description,
         location: parameter.location,
-        schema: spec.apiModel ? undefined : parameter.schema,
         hidden: parameter.hidden,
       })),
     })),
     serverConfig,
     authConfig,
+    mcpServerAuthConfig,
     exportConfig,
   };
   const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
@@ -269,6 +409,8 @@ export default function ExportPage() {
   const port = parseInt(portValue, 10);
   const isPortValid = !isNaN(port) && port > 0 && port <= 65535;
   const isAuthValid = authConfig.type !== "apiKey" || Boolean(authConfig.apiKey?.name?.trim());
+  const isHttpTransport = serverConfig.transport !== "stdio";
+  const isWildcardHost = serverConfig.host.trim() === "0.0.0.0";
   const duplicateToolNames = selectedTools
     .map((tool) => tool.toolName.trim())
     .filter((name, index, names) => name && names.indexOf(name) !== index);
@@ -276,6 +418,11 @@ export default function ExportPage() {
     ...(selectedTools.length === 0 ? ["Select at least one endpoint before generating."] : []),
     ...(!isPortValid ? ["Server port must be between 1 and 65535."] : []),
     ...(!isAuthValid ? ["API key authentication needs a key name."] : []),
+    ...(isHttpTransport && mcpServerAuthConfig.type === "none" ? [exportConfig.language === "python"
+      ? "Python FastMCP HTTP/SSE output does not enforce MCP server bearer auth. Bind to localhost or put it behind an authenticated reverse proxy."
+      : "HTTP/SSE MCP server access has no bearer token configured. Bind to localhost, or select bearer auth and set MCP_AUTH_TOKEN before exposing this server."] : []),
+    ...(isHttpTransport && isWildcardHost && mcpServerAuthConfig.type === "none" ? ["Host is 0.0.0.0 and MCP server access auth is none. This can expose the MCP server to the network."] : []),
+    ...(isHttpTransport && exportConfig.language === "python" && (mcpServerAuthConfig.type !== "none" || mcpServerAuthConfig.allowedOrigins.length > 0) ? ["Python FastMCP output includes MCP server access config placeholders, but generated code does not enforce them. Use a reverse proxy for HTTP/SSE auth."] : []),
     ...(duplicateToolNames.length > 0 ? [`Duplicate tool names will be renamed during generation: ${[...new Set(duplicateToolNames)].join(", ")}.`] : []),
     ...(manualReviewEndpoints.length > 0 ? [`${manualReviewEndpoints.length} selected endpoint${manualReviewEndpoints.length === 1 ? "" : "s"} need manual review.`] : []),
     ...(!exportFeatures.verification ? ["Post-generation verification is disabled."] : []),
@@ -303,31 +450,78 @@ export default function ExportPage() {
     setAuthConfig({ type: v });
   };
 
+  const handleMcpServerAuthTypeChange = (v: McpServerAuthType) => {
+    setMcpServerAuthConfig({ type: v });
+  };
+
+  const handleAllowedOriginsChange = (value: string) => {
+    setMcpServerAuthConfig({
+      allowedOrigins: value
+        .split(",")
+        .map((origin) => origin.trim())
+        .filter(Boolean),
+    });
+  };
+
+  const triggerDownload = (blob: Blob, filename: string) => {
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    window.URL.revokeObjectURL(url);
+    a.remove();
+  };
+
   const handleGenerate = async () => {
     setIsGenerating(true);
     setError(null);
     try {
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(generatorPayload),
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
-      const blob = await res.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `${serverConfig.name}.zip`;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      a.remove();
+      if (browserMode) {
+        // Privacy mode: run the pure generator + zip entirely in the browser.
+        // The spec never touches the network. Verification is server-only, so
+        // it is not run here (matches the note shown in the UI).
+        const { blob, filename } = generateProjectInBrowser(generatorPayload);
+        triggerDownload(blob, filename);
+      } else {
+        const res = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(generatorPayload),
+        });
+        if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
+        const blob = await res.blob();
+        triggerDownload(blob, `${serverConfig.name}.zip`);
+      }
       saveCurrentProject();
+      setGenerated({
+        serverName: serverConfig.name,
+        language: exportConfig.language,
+        packageManager: exportConfig.packageManager,
+        transport: serverConfig.transport,
+        host: serverConfig.host,
+        port: serverConfig.port,
+        authType: authConfig.type,
+        apiKeyName: authConfig.apiKey?.name,
+        baseUrl: spec.baseUrl,
+        compactMode: exportConfig.compactMode,
+        toolCount: selectedTools.length,
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Generation failed");
     } finally {
       setIsGenerating(false);
     }
+  };
+
+  const handleDownloadAgain = () => {
+    void handleGenerate();
+  };
+
+  const handleBackToConfig = () => {
+    setGenerated(null);
+    setError(null);
   };
 
   const handlePreview = async () => {
@@ -349,6 +543,23 @@ export default function ExportPage() {
       setIsPreviewing(false);
     }
   };
+
+  if (generated) {
+    return (
+      <div className="min-h-screen flex flex-col">
+        <Header />
+        <main className="pt-14 flex-1 flex flex-col relative z-10">
+          <SuccessView
+            snapshot={generated}
+            onBackToConfig={handleBackToConfig}
+            onDownloadAgain={handleDownloadAgain}
+            isGenerating={isGenerating}
+            error={error}
+          />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -443,6 +654,12 @@ export default function ExportPage() {
               <Section title="Output">
                 <div className="space-y-3">
                   <FeatureToggle
+                    label="Compact mode (meta-tools)"
+                    description="Expose 3 meta-tools (list / get-schema / invoke) instead of one tool per endpoint. Keeps large APIs from bloating the model's context window."
+                    checked={exportConfig.compactMode}
+                    onCheckedChange={(checked) => setExportConfig({ compactMode: checked })}
+                  />
+                  <FeatureToggle
                     label="Documentation"
                     description="Include README and usage notes"
                     checked={exportFeatures.documentation}
@@ -486,8 +703,8 @@ export default function ExportPage() {
                 </div>
               </Section>
 
-              {/* Authentication */}
-              <Section title="Auth">
+              {/* Upstream API Authentication */}
+              <Section title="Upstream API Auth">
                 <Select value={authConfig.type} onValueChange={(v) => handleAuthTypeChange(v as AuthType)}>
                   <SelectTrigger className="h-8 bg-background border-border text-xs">
                     <SelectValue />
@@ -538,6 +755,100 @@ export default function ExportPage() {
                 )}
               </Section>
 
+              <Section title="MCP Server Access">
+                {serverConfig.transport === "stdio" ? (
+                  <div className="border border-border px-4 py-3 text-xs text-muted-foreground leading-relaxed">
+                    MCP server access auth is not applicable for stdio because the client talks to the server over local process stdin/stdout. Keep stdio for local-only use.
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="space-y-1.5">
+                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Server Auth</Label>
+                      <Select value={mcpServerAuthConfig.type} onValueChange={(v) => handleMcpServerAuthTypeChange(v as McpServerAuthType)}>
+                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="none">No MCP auth</SelectItem>
+                          <SelectItem value="bearer">Bearer token from MCP_AUTH_TOKEN</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Allowed Origins</Label>
+                      <Input
+                        value={mcpServerAuthConfig.allowedOrigins.join(", ")}
+                        onChange={(event) => handleAllowedOriginsChange(event.target.value)}
+                        placeholder="https://client.example.com, http://localhost:3000"
+                        className="h-8 bg-background border-border text-xs focus:border-primary"
+                      />
+                      <p className="text-[11px] leading-relaxed text-muted-foreground">
+                        {exportConfig.language === "python"
+                          ? "Generated FastMCP output includes MCP_ALLOWED_ORIGINS as a placeholder only. Enforce allowed origins in a reverse proxy or gateway."
+                          : "Generated HTTP/SSE servers reject disallowed Origin headers and answer CORS preflight requests for allowed origins. Leave blank to allow any origin."}
+                      </p>
+                    </div>
+
+                    {mcpServerAuthConfig.type === "bearer" && exportConfig.language === "node" && (
+                      <div className="border border-primary/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
+                        Set MCP_AUTH_TOKEN in the generated server environment. HTTP/SSE requests must send Authorization: Bearer &lt;token&gt;.
+                      </div>
+                    )}
+
+                    {mcpServerAuthConfig.type === "bearer" && exportConfig.language === "python" && (
+                      <div className="border border-amber-500/30 px-3 py-2 text-[11px] leading-relaxed text-amber-500">
+                        Generated FastMCP code stores MCP_AUTH_TOKEN as a placeholder only. It does not reject unauthenticated requests; enforce bearer auth in a reverse proxy.
+                      </div>
+                    )}
+
+                    {mcpServerAuthConfig.type === "none" && (
+                      <div className="border border-amber-500/30 px-3 py-2 text-[11px] leading-relaxed text-amber-500">
+                        HTTP/SSE MCP server access has no bearer token configured. Prefer localhost binding unless another layer authenticates clients.
+                      </div>
+                    )}
+
+                    {isWildcardHost && mcpServerAuthConfig.type === "none" && (
+                      <div className="border border-red/30 px-3 py-2 text-[11px] leading-relaxed text-red">
+                        Host 0.0.0.0 with no MCP server auth can expose this server to the network.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </Section>
+
+              <Section title="Generation">
+                <div className="space-y-3">
+                  <FeatureToggle
+                    label="Generate in your browser"
+                    description="Privacy mode: build and zip the project locally. Your spec never leaves your browser."
+                    checked={browserMode}
+                    onCheckedChange={setBrowserMode}
+                  />
+                  <div className="flex items-start gap-2 border border-border px-4 py-3 text-[11px] leading-relaxed text-muted-foreground">
+                    {browserMode ? (
+                      <>
+                        <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary" />
+                        <p>
+                          Generation runs entirely on this device. The spec is never uploaded.
+                          {exportFeatures.verification && (
+                            <> Post-generation verification is server-only, so it is skipped in browser mode.</>
+                          )}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <Cpu className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
+                        <p>
+                          Server mode sends the spec to this app&rsquo;s server to build the zip. Required for full
+                          install-and-build verification, which cannot run in the browser.
+                        </p>
+                      </>
+                    )}
+                  </div>
+                </div>
+              </Section>
+
               <Section title="Export Readiness">
                 <div className="grid gap-3">
                   <StatusRow
@@ -548,9 +859,15 @@ export default function ExportPage() {
                   />
                   <StatusRow
                     icon={<ShieldCheck className="w-4 h-4" />}
-                    label="Detected auth"
+                    label="Detected upstream auth"
                     value={detectedAuth.length > 0 ? detectedAuth.map((item) => getAuthLabel(item.type)).join(", ") : "None detected"}
                     tone={detectedAuth.length > 0 ? "success" : "muted"}
+                  />
+                  <StatusRow
+                    icon={<ShieldCheck className="w-4 h-4" />}
+                    label="MCP server access"
+                    value={formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport, exportConfig.language)}
+                    tone={serverConfig.transport === "stdio" ? "muted" : exportConfig.language === "python" ? "warning" : mcpServerAuthConfig.type === "none" ? "warning" : "success"}
                   />
                   <StatusRow
                     icon={<Cpu className="w-4 h-4" />}
@@ -761,9 +1078,15 @@ export default function ExportPage() {
               <span className="text-primary/20">·</span>
               <span>{getTransportLabel(serverConfig.transport)}</span>
               <span className="text-primary/20">·</span>
-              <span>{selectedTools.length} tools</span>
+              <span>
+                {exportConfig.compactMode
+                  ? `compact · 3 meta-tools`
+                  : `${selectedTools.length} tools`}
+              </span>
               <span className="text-primary/20">·</span>
               <span>{formatAuthConfig(authConfig)}</span>
+              <span className="text-primary/20">·</span>
+              <span>{formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport, exportConfig.language)}</span>
               <span className="text-primary/20">·</span>
               <span>{previewData?.manifest?.generatorVersion ? `v${previewData.manifest.generatorVersion}` : "preview"}</span>
             </div>
@@ -772,6 +1095,18 @@ export default function ExportPage() {
 
         {/* ─── Bottom action bar ─── */}
         <div className="border-t-2 border-primary bg-background z-20">
+          <div className="max-w-[1400px] mx-auto px-6 pt-2.5 flex items-start gap-2 text-[11px] leading-relaxed text-muted-foreground">
+            <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
+            {browserMode ? (
+              <p>
+                Privacy mode is on. Your spec is processed entirely in your browser to generate the code and build the zip &mdash; it is never sent to any server. Nothing is uploaded, stored, or shared.
+              </p>
+            ) : (
+              <p>
+                Your spec is sent to this app&rsquo;s server only to generate the code, processed in memory, and returned as a zip. It is not stored or persisted server-side. Generation runs entirely on our server; nothing is shared with third parties.
+              </p>
+            )}
+          </div>
           <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
             <Button
               variant="ghost"
@@ -1019,6 +1354,248 @@ function ManualReviewList({
           </ul>
         </div>
       ))}
+    </div>
+  );
+}
+
+/* ─── Post-download success experience ─── */
+
+function ConfigSnippet({
+  title,
+  hint,
+  language,
+  value,
+}: {
+  title: string;
+  hint: string;
+  language: "json" | "bash";
+  value: string;
+}) {
+  return (
+    <div className="border border-border">
+      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+        <div className="min-w-0">
+          <p className="text-xs font-medium text-foreground">{title}</p>
+          <p className="text-[10px] text-muted-foreground truncate">{hint}</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="text-[9px] tracking-[0.15em] uppercase text-muted-foreground border border-border px-1.5 py-0.5">
+            {language}
+          </span>
+          <CopyButton value={value} />
+        </div>
+      </div>
+      <pre className="p-3 overflow-x-auto text-[11px] leading-5 bg-background">
+        <code>{value}</code>
+      </pre>
+    </div>
+  );
+}
+
+function StepItem({ index, title, children }: { index: number; title: string; children: React.ReactNode }) {
+  return (
+    <li className="flex gap-3">
+      <span className="shrink-0 w-6 h-6 rounded-full border border-primary/40 text-primary text-[11px] font-semibold flex items-center justify-center">
+        {index}
+      </span>
+      <div className="min-w-0 pt-0.5">
+        <p className="text-sm font-medium text-foreground">{title}</p>
+        <div className="mt-1 text-xs text-muted-foreground leading-relaxed">{children}</div>
+      </div>
+    </li>
+  );
+}
+
+function InlineCode({ children }: { children: React.ReactNode }) {
+  return (
+    <code className="text-[11px] bg-surface border border-border px-1 py-0.5 text-foreground">{children}</code>
+  );
+}
+
+function SuccessView({
+  snapshot,
+  onBackToConfig,
+  onDownloadAgain,
+  isGenerating,
+  error,
+}: {
+  snapshot: GeneratedSnapshot;
+  onBackToConfig: () => void;
+  onDownloadAgain: () => void;
+  isGenerating: boolean;
+  error: string | null;
+}) {
+  const isStdio = snapshot.transport === "stdio";
+  const install = getInstallCommand(snapshot);
+  const run = getRunCommand(snapshot);
+  const claudeDesktopConfig = buildMcpServersConfig(snapshot);
+  const cursorConfig = buildCursorConfig(snapshot);
+  const claudeCli = buildClaudeCliCommand(snapshot);
+  const transportUrl = getSnapshotTransportUrl(snapshot);
+
+  return (
+    <div className="flex-1 overflow-y-auto">
+      <div className="max-w-3xl mx-auto px-8 py-12 space-y-10">
+        {/* Success header */}
+        <div className="text-center space-y-3">
+          <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 text-primary">
+            <PartyPopper className="w-7 h-7" />
+          </div>
+          <h1
+            className="text-3xl font-semibold tracking-tight"
+            style={{ fontFamily: "'Clash Display', sans-serif" }}
+          >
+            Your MCP server is ready
+          </h1>
+          <p className="text-sm text-muted-foreground">
+            <span className="text-foreground font-medium">{snapshot.serverName}.zip</span> is downloading to your machine.
+            Follow the steps below to connect it to an MCP client.
+          </p>
+          <div className="flex items-center justify-center gap-3 pt-1 text-[10px] tracking-[0.15em] uppercase text-muted-foreground">
+            <span>{snapshot.language === "node" ? "Node.js / TypeScript" : "Python"}</span>
+            <span className="text-primary/20">·</span>
+            <span>{getTransportLabel(snapshot.transport)}</span>
+            <span className="text-primary/20">·</span>
+            <span>
+              {snapshot.compactMode
+                ? "Compact · 3 meta-tools"
+                : `${snapshot.toolCount} tool${snapshot.toolCount === 1 ? "" : "s"}`}
+            </span>
+          </div>
+          {snapshot.compactMode && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed max-w-lg mx-auto">
+              Compact mode is on: the server exposes <InlineCode>list_api_endpoints</InlineCode>,{" "}
+              <InlineCode>get_api_endpoint_schema</InlineCode>, and{" "}
+              <InlineCode>invoke_api_endpoint</InlineCode> — the model discovers and calls your{" "}
+              {snapshot.toolCount} endpoint{snapshot.toolCount === 1 ? "" : "s"} on demand instead of
+              loading them all into context.
+            </p>
+          )}
+        </div>
+
+        {/* Client config */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Settings2 className="w-4 h-4 text-primary" />
+            <h2 className="text-lg font-semibold tracking-tight" style={{ fontFamily: "'Clash Display', sans-serif" }}>
+              Connect your client
+            </h2>
+          </div>
+          <p className="text-xs text-muted-foreground leading-relaxed">
+            {isStdio
+              ? "Client config formats vary, but the shape is the same one shipped in the generated README. Fill the env values from your .env before connecting."
+              : "Client config formats vary, but the shape matches the generated README. Start the server first, then point your client at its URL. Configure .env on the machine where the server runs."}
+          </p>
+
+          <ConfigSnippet
+            title="Claude Desktop"
+            hint="Add to claude_desktop_config.json"
+            language="json"
+            value={claudeDesktopConfig}
+          />
+          <ConfigSnippet
+            title="Cursor"
+            hint="Add to .cursor/mcp.json (or the global mcp.json)"
+            language="json"
+            value={cursorConfig}
+          />
+          <ConfigSnippet
+            title="Claude Code CLI"
+            hint="Register the server from your terminal"
+            language="bash"
+            value={claudeCli}
+          />
+
+          {!isStdio && (
+            <p className="text-[11px] text-muted-foreground leading-relaxed border border-border px-3 py-2">
+              HTTP/SSE clients connect to <InlineCode>{transportUrl}</InlineCode>. Env vars such as
+              upstream API auth and <InlineCode>MCP_AUTH_TOKEN</InlineCode> belong in the server&rsquo;s
+              <InlineCode>.env</InlineCode>, not in the client config.
+            </p>
+          )}
+        </section>
+
+        {/* Next steps */}
+        <section className="space-y-4">
+          <div className="flex items-center gap-2">
+            <Terminal className="w-4 h-4 text-primary" />
+            <h2 className="text-lg font-semibold tracking-tight" style={{ fontFamily: "'Clash Display', sans-serif" }}>
+              Next steps
+            </h2>
+          </div>
+          <ol className="space-y-4">
+            <StepItem index={1} title="Unzip the download">
+              Extract <InlineCode>{snapshot.serverName}.zip</InlineCode> to a working folder.
+            </StepItem>
+            <StepItem index={2} title="Install dependencies">
+              From the project root, run <InlineCode>{install}</InlineCode>
+              {snapshot.language === "python" && (
+                <> (or <InlineCode>uv pip install -e .</InlineCode> if you use uv)</>
+              )}
+              .
+            </StepItem>
+            <StepItem index={3} title="Configure secrets">
+              Copy <InlineCode>.env.example</InlineCode> to <InlineCode>.env</InlineCode> with{" "}
+              <InlineCode>cp .env.example .env</InlineCode>, then fill in the required values
+              {snapshot.authType !== "none" && <> (including your upstream API credentials)</>}.
+            </StepItem>
+            <StepItem index={4} title={isStdio ? "Add to your client" : "Start the server, then add it to your client"}>
+              {isStdio ? (
+                <>Use the client config above. Local clients launch the server with <InlineCode>{getSnapshotStdioClient(snapshot).command}</InlineCode> over stdio.</>
+              ) : (
+                <>Run <InlineCode>{run}</InlineCode> to start the server, then point your client at <InlineCode>{transportUrl}</InlineCode> using the config above.</>
+              )}
+            </StepItem>
+          </ol>
+        </section>
+
+        {/* Star CTA */}
+        <section className="border border-primary/30 bg-primary/[0.04] px-5 py-4 flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-medium text-foreground">Enjoying MakeMCP?</p>
+            <p className="text-xs text-muted-foreground">A star helps other developers find it.</p>
+          </div>
+          <Button asChild variant="outline" className="shrink-0 text-xs">
+            <Link href={GITHUB_REPO_URL} target="_blank" rel="noopener noreferrer">
+              <Github className="w-3.5 h-3.5 mr-2" />
+              Star on GitHub
+            </Link>
+          </Button>
+        </section>
+
+        {error && (
+          <p className="text-[11px] text-red tracking-wider text-center">{error}</p>
+        )}
+
+        {/* Actions */}
+        <div className="flex items-center justify-between border-t border-border pt-6">
+          <Button
+            variant="ghost"
+            onClick={onBackToConfig}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            <ArrowLeft className="w-3.5 h-3.5 mr-2" />
+            Back to configuration
+          </Button>
+          <Button
+            onClick={onDownloadAgain}
+            disabled={isGenerating}
+            className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 font-semibold text-xs tracking-wider"
+          >
+            {isGenerating ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
+                Generating
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5 mr-2" />
+                Download again
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }

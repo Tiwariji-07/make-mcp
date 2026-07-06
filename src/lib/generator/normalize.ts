@@ -11,15 +11,12 @@ import {
     type ToolAuthSchemePlan,
     type ToolPlanParameter,
 } from "./types.ts";
-import type { ApiMediaType, ApiModel, ApiOperation, ApiParameter } from "@/lib/api-model";
+import type { ApiModel, ApiOperation } from "@/lib/api-model";
 import { planToolFromOperation } from "./planner.ts";
 import {
-    getBodyContentKind,
     getDefaultFeatures,
-    getParameterLocation,
     getTransportStrategy,
     makeUniqueIdentifier,
-    parseEndpointId,
 } from "./utils.ts";
 
 function makeUniqueDisplayName(desired: string, existing: Set<string>, fallback: string): string {
@@ -66,6 +63,15 @@ function normalizeAuth(input: GeneratorRequest["authConfig"]): GenerationPlan["a
     return { strategy: "none", type: input.type };
 }
 
+function normalizeMcpServerAuth(input?: GeneratorRequest["mcpServerAuthConfig"]): GenerationPlan["mcpServerAuth"] {
+    return {
+        type: input?.type || "none",
+        tokenEnvVar: "MCP_AUTH_TOKEN",
+        allowedOriginsEnvVar: "MCP_ALLOWED_ORIGINS",
+        allowedOrigins: [...new Set((input?.allowedOrigins || []).map((origin) => origin.trim()).filter(Boolean))],
+    };
+}
+
 function authPlanFromNormalizedAuth(auth: GenerationPlan["auth"]): ToolAuthPlan {
     if (auth.strategy === "none") {
         return { strategy: "none", source: "none", requirements: [] };
@@ -103,20 +109,6 @@ function mergeFallbackAuthPlan(toolAuth: ToolAuthPlan, fallbackAuth: GenerationP
 
 function getCanonicalOperation(apiModel: ApiModel | undefined, endpointId: string): ApiOperation | undefined {
     return apiModel?.operations.find((operation) => operation.id === endpointId);
-}
-
-function getCanonicalParameter(operation: ApiOperation | undefined, parameter: GeneratorToolParameter): ApiParameter | undefined {
-    return operation?.parameters.find((candidate) =>
-        candidate.name === parameter.originalName ||
-        candidate.name === parameter.name
-    );
-}
-
-function getCanonicalRequestMedia(operation: ApiOperation | undefined, preferredContentType?: string): ApiMediaType | undefined {
-    if (!operation?.requestBody?.content.length) return undefined;
-
-    return operation.requestBody.content.find((media) => media.mediaType === preferredContentType)
-        || operation.requestBody.content[0];
 }
 
 function getTypeFromSchema(schema?: Record<string, unknown>): string {
@@ -239,6 +231,9 @@ function toGenerationToolFromToolPlan(
         params,
         authStrategy: mergeFallbackAuthPlan(toolPlan.authStrategy, fallbackAuth),
         requestBody,
+        title: toolPlan.title,
+        outputSchema: toolPlan.outputSchema,
+        annotations: toolPlan.annotations,
     };
 }
 
@@ -250,89 +245,33 @@ function normalizeTool(
     fallbackAuth: GenerationPlan["auth"]
 ): GenerationTool {
     const canonicalOperation = getCanonicalOperation(apiModel, tool.endpointId);
-    if (apiModel && canonicalOperation) {
-        const displayName = tool.toolName.trim() || `tool_${toolIndex + 1}`;
-
-        if (displayName !== tool.toolName) {
-            warnings.push(`Trimmed empty or padded tool name for ${tool.endpointId}`);
-        }
-
-        return toGenerationToolFromToolPlan(
-            planToolFromOperation(apiModel, canonicalOperation, {
-                toolName: displayName,
-                description: tool.description,
-                preferredContentType: tool.bodyContentType,
-                index: toolIndex,
-            }),
-            tool,
-            warnings,
-            fallbackAuth
+    if (!apiModel || !canonicalOperation) {
+        // The canonical (apiModel) path is the only supported path. Every tool must
+        // resolve to an operation in the parsed API model; there is no heuristic
+        // fallback for building a tool from an endpointId alone.
+        throw new Error(
+            `Cannot normalize tool "${tool.endpointId}": no matching operation found in the parsed API model. `
+            + "A canonical apiModel with an operation whose id equals the tool's endpointId is required."
         );
     }
 
-    const parsedEndpoint = parseEndpointId(tool.endpointId);
-    const method = canonicalOperation?.method || parsedEndpoint.method;
-    const path = canonicalOperation?.path || parsedEndpoint.path;
-    const seenArgs = new Set<string>();
     const displayName = tool.toolName.trim() || `tool_${toolIndex + 1}`;
-    const functionName = makeUniqueIdentifier(displayName, new Set<string>(), `tool_${toolIndex + 1}`);
-    const canonicalMedia = getCanonicalRequestMedia(canonicalOperation, tool.bodyContentType);
 
     if (displayName !== tool.toolName) {
         warnings.push(`Trimmed empty or padded tool name for ${tool.endpointId}`);
     }
 
-    const params: GenerationParam[] = tool.parameters.filter((parameter) => !parameter.hidden).map((parameter, parameterIndex) => {
-        const canonicalParameter = getCanonicalParameter(canonicalOperation, parameter);
-        const desired = parameter.name || parameter.originalName || `param_${parameterIndex + 1}`;
-        const argName = makeUniqueIdentifier(desired, seenArgs, `param_${parameterIndex + 1}`);
-        const location = canonicalParameter?.in || getParameterLocation(parameter, path, method);
-
-        if (argName !== desired) {
-            warnings.push(`Normalized parameter "${desired}" to "${argName}" for ${displayName}`);
-        }
-
-        return {
-            argName,
-            sourceName: canonicalParameter?.name || parameter.originalName || parameter.name,
-            type: parameter.type,
-            required: canonicalParameter?.required ?? parameter.required,
-            description: parameter.description || canonicalParameter?.description || "",
-            location,
-            schema: canonicalParameter?.schema || parameter.schema,
-            style: canonicalParameter?.style,
-            explode: canonicalParameter?.explode,
-        };
-    });
-
-    const bodyParams = params.filter((param) => param.location === "body");
-    const bodySchema = canonicalMedia?.schema || tool.bodySchema;
-    const bodyContentType = canonicalMedia?.mediaType || tool.bodyContentType;
-    const contentKind = getBodyContentKind({ ...tool, bodySchema, bodyContentType }, params);
-    const requestBody = contentKind
-        ? {
-            contentType: bodyContentType || "application/json",
-            contentKind,
-            schema: bodySchema,
-            params: bodyParams,
-        }
-        : undefined;
-
-    if (requestBody?.contentKind === "binary") {
-        warnings.push(`Binary request bodies for ${displayName} require manual review in generated clients`);
-    }
-
-    return {
-        id: tool.endpointId,
-        displayName,
-        functionName,
-        description: tool.description || `${method} ${path}`,
-        method: method as GenerationTool["method"],
-        path,
-        params,
-        authStrategy: authPlanFromNormalizedAuth(fallbackAuth),
-        requestBody,
-    };
+    return toGenerationToolFromToolPlan(
+        planToolFromOperation(apiModel, canonicalOperation, {
+            toolName: displayName,
+            description: tool.description,
+            preferredContentType: tool.bodyContentType,
+            index: toolIndex,
+        }),
+        tool,
+        warnings,
+        fallbackAuth
+    );
 }
 
 export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
@@ -340,6 +279,7 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
     const seenToolNames = new Set<string>();
     const seenFunctionNames = new Set<string>();
     const auth = normalizeAuth(request.authConfig);
+    const mcpServerAuth = normalizeMcpServerAuth(request.mcpServerAuthConfig);
 
     const tools = request.tools.map((tool, index) => {
         const normalized = normalizeTool(tool, index, warnings, request.spec.apiModel, auth);
@@ -386,8 +326,13 @@ export function buildGenerationPlan(request: GeneratorRequest): GenerationPlan {
             packageManager: request.exportConfig.packageManager,
             transport: request.serverConfig.transport,
             transportStrategy: getTransportStrategy(request.serverConfig.transport),
+            // Threaded from the request; false by default and inert until the
+            // Node/Python targets implement meta-tool emission (see the design
+            // contract on GenerationPlan.runtime.compactMode in types.ts).
+            compactMode: request.exportConfig.compactMode ?? false,
         },
         auth,
+        mcpServerAuth,
         features: getDefaultFeatures(request.exportConfig),
         verificationMode: request.exportConfig.verificationMode || "fast",
         tools,

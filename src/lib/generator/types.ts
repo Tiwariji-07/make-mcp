@@ -31,6 +31,7 @@ export interface GeneratorRequest {
     tools: GeneratorToolConfig[];
     serverConfig: GeneratorServerConfig;
     authConfig: GeneratorAuthConfig;
+    mcpServerAuthConfig?: GeneratorMcpServerAuthConfig;
     exportConfig: GeneratorExportConfig;
 }
 
@@ -42,6 +43,10 @@ export interface GeneratorToolConfig {
     parameters: GeneratorToolParameter[];
     bodySchema?: Record<string, unknown>;
     bodyContentType?: string;
+    // Optional MCP metadata (MCP 2025-11-25) that the API route may pass through.
+    title?: string;
+    outputSchema?: Record<string, unknown>;
+    annotations?: ToolAnnotations;
 }
 
 export interface GeneratorToolParameter {
@@ -68,6 +73,11 @@ export interface GeneratorAuthConfig {
     apiKey?: { name: string; in: "header" | "query" | "cookie" };
 }
 
+export interface GeneratorMcpServerAuthConfig {
+    type: "none" | "bearer";
+    allowedOrigins?: string[];
+}
+
 export interface GenerationFeatureFlags {
     documentation: boolean;
     docker: boolean;
@@ -81,6 +91,9 @@ export interface GeneratorExportConfig {
     packageManager: PackageManager;
     verificationMode?: VerificationMode;
     features?: Partial<GenerationFeatureFlags>;
+    // Compact mode (meta-tools). Optional; defaults to false. See the design
+    // contract on GenerationPlan.runtime.compactMode below.
+    compactMode?: boolean;
 }
 
 export interface GenerationPlan {
@@ -100,8 +113,59 @@ export interface GenerationPlan {
         packageManager: PackageManager;
         transport: Transport;
         transportStrategy: TransportStrategy;
+        // ---------------------------------------------------------------------
+        // COMPACT MODE (meta-tools) — DESIGN CONTRACT for the Node/Python targets
+        // ---------------------------------------------------------------------
+        // When `compactMode` is false (the default), targets emit exactly what
+        // they emit today: one MCP tool per entry in `plan.tools`. Output MUST
+        // stay byte-identical to the non-compact behavior — this flag is inert
+        // until a target opts in, and targets that ignore it stay correct.
+        //
+        // When `compactMode` is true, a target MUST NOT register one tool per
+        // operation. Instead it registers exactly THREE meta-tools, built from
+        // the SAME `plan.tools` list (which is always fully populated — never
+        // trimmed in compact mode — so the target can construct its registry):
+        //
+        //   1. `list_api_endpoints`
+        //      Browse/search the operation catalog. Input (all optional):
+        //        { search?: string, tag?: string, method?: HTTP method,
+        //          limit?: integer (1..100, default 50), cursor?: string }
+        //      Output: lightweight records only, never schemas:
+        //        { endpoints: Array<{ id, method, path, summary, tags }>,
+        //          next_cursor?, total_estimate }
+        //      (`id` is the plan tool id / operationId.)
+        //
+        //   2. `get_api_endpoint_schema`
+        //      Fetch the full contract for one operation on demand. Input:
+        //        { endpointId: string }  (required)
+        //      Output: { id, method, path, summary, description, parameters[],
+        //                requestBody?, outputSchema?, auth[] }.
+        //
+        //   3. `invoke_api_endpoint`
+        //      Actually call one operation. Input:
+        //        { endpointId: string (required),
+        //          parameters?: { path?, query?, header?, body? } }
+        //      Output envelope: { ok, status, endpointId, data?, error? };
+        //      on failure `ok:false` with structured
+        //      `error: { type, message, details? }`.
+        //
+        // SAFE-DISPATCH RULE (security-critical, invoke_api_endpoint):
+        //   Build an immutable registry from `plan.tools`, keyed by tool id.
+        //   a) Refuse unknown ids — look up in the closed registry; if absent
+        //      return error.type = "unknown_operation" and make NO HTTP call.
+        //   b) Validate the supplied arguments against that operation's schema
+        //      (parameters + requestBody) BEFORE any network I/O; reject
+        //      missing-required / type-mismatch / unknown params.
+        //   c) Build the request from the operation's STORED method + path
+        //      template (interpolate validated, encoded path params), never from
+        //      a model-supplied URL/string. Never eval or string-build calls.
+        //   d) Apply auth server-side from config/env; the model never supplies
+        //      secrets. Return a bounded envelope.
+        // See "Meta-tools / compact mode design" in the research doc.
+        compactMode: boolean;
     };
     auth: NormalizedAuth;
+    mcpServerAuth: NormalizedMcpServerAuth;
     features: GenerationFeatureFlags;
     verificationMode: VerificationMode;
     tools: GenerationTool[];
@@ -114,7 +178,10 @@ export interface ToolPlan {
     method: "GET" | "POST" | "PUT" | "DELETE" | "PATCH" | "OPTIONS" | "HEAD" | "TRACE";
     path: string;
     toolName: string;
+    title?: string;
     inputSchema: Record<string, unknown>;
+    outputSchema?: Record<string, unknown>;
+    annotations?: ToolAnnotations;
     description: string;
     authStrategy: ToolAuthPlan;
     requestBodyStrategy: ToolRequestBodyPlan;
@@ -122,6 +189,26 @@ export interface ToolPlan {
     parameters: ToolPlanParameter[];
     warnings: string[];
     manualReview: ToolManualReviewFlag[];
+}
+
+// MCP tool annotations (MCP 2025-11-25). These are behavioral hints derived from
+// HTTP method semantics; they are advisory and MUST NOT be relied on for security.
+// All fields are optional so that targets which do not yet emit annotations still
+// compile and existing generated output stays unchanged.
+export interface ToolAnnotations {
+    // Human-friendly display name for the tool (e.g. the operation summary).
+    title?: string;
+    // The tool does not modify its environment. True for GET and HEAD.
+    readOnlyHint?: boolean;
+    // The tool may perform destructive updates. True for DELETE, PUT and PATCH.
+    // Only meaningful when readOnlyHint is false.
+    destructiveHint?: boolean;
+    // Repeated calls with the same arguments have no additional effect beyond the
+    // first. True for GET, HEAD, PUT and DELETE; false for POST and PATCH.
+    idempotentHint?: boolean;
+    // The tool interacts with an "open world" of external entities. Always true
+    // here because generated tools call external HTTP APIs.
+    openWorldHint?: boolean;
 }
 
 export interface ToolAuthPlan {
@@ -197,6 +284,13 @@ export interface NormalizedAuth {
     apiKeyLocation?: "header" | "query" | "cookie";
 }
 
+export interface NormalizedMcpServerAuth {
+    type: GeneratorMcpServerAuthConfig["type"];
+    tokenEnvVar: "MCP_AUTH_TOKEN";
+    allowedOriginsEnvVar: "MCP_ALLOWED_ORIGINS";
+    allowedOrigins: string[];
+}
+
 export interface GenerationTool {
     id: string;
     displayName: string;
@@ -207,6 +301,11 @@ export interface GenerationTool {
     params: GenerationParam[];
     authStrategy: ToolAuthPlan;
     requestBody?: GenerationRequestBody;
+    // Optional MCP metadata threaded from the tool plan. Targets that do not yet
+    // emit these leave generated output unchanged.
+    title?: string;
+    outputSchema?: Record<string, unknown>;
+    annotations?: ToolAnnotations;
 }
 
 export interface GenerationParam {

@@ -40,20 +40,14 @@ export const metadata: Metadata = {
     siteName: "MakeMCP",
     title: "MakeMCP - Bridge APIs to LLM Context",
     description: "Transform OpenAPI and Postman specs into production-ready MCP servers. Enable LLMs to interact with your APIs instantly.",
-    images: [
-      {
-        url: "/og-image.png",
-        width: 1200,
-        height: 630,
-        alt: "MakeMCP - Generate MCP Servers from API Specs",
-      },
-    ],
+    // Social card image is generated dynamically via src/app/opengraph-image.tsx
+    // (Next.js auto-wires the file-based convention).
   },
   twitter: {
     card: "summary_large_image",
     title: "MakeMCP - Generate MCP Servers from API Specs",
     description: "Transform OpenAPI and Postman specs into production-ready MCP servers for LLMs.",
-    images: ["/og-image.png"],
+    // Twitter card image is generated dynamically via src/app/twitter-image.tsx.
   },
   robots: {
     index: true,
