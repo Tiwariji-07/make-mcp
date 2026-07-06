@@ -308,15 +308,10 @@ ${successBody}
 
 function renderIndex(plan: GenerationPlan): string {
     const transportStrategy = getNodeTransportStrategy(plan);
-    const bootstrap = transportStrategy.bootstrap
-        .replace(
-            `new URL(req.url || "/", ${JSON.stringify(`http://${plan.server.host}:${plan.server.port}`)})`,
-            "new URL(req.url || \"/\", `http://${MCP_SERVER_CONFIG.host}:${MCP_SERVER_CONFIG.port}`)"
-        )
-        .replaceAll(
-            `httpServer.listen(${plan.server.port}, ${JSON.stringify(plan.server.host)},`,
-            "httpServer.listen(MCP_SERVER_CONFIG.port, MCP_SERVER_CONFIG.host,"
-        );
+    // The transport bootstrap already reads host/port from MCP_SERVER_CONFIG at
+    // runtime (see getNodeTransportStrategy), so index.ts embeds no host/port
+    // literals to patch. Only the transport-agnostic scaffolding lives here.
+    const bootstrap = transportStrategy.bootstrap;
 
     return `import "dotenv/config";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";

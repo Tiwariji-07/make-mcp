@@ -111,13 +111,6 @@ function getCanonicalOperation(apiModel: ApiModel | undefined, endpointId: strin
     return apiModel?.operations.find((operation) => operation.id === endpointId);
 }
 
-function getTypeFromSchema(schema?: Record<string, unknown>): string {
-    if (!schema) return "string";
-    if (schema.type === "array") return "array";
-    if (schema.type === "object" || schema.properties) return "object";
-    return typeof schema.type === "string" ? schema.type : "string";
-}
-
 function findConfiguredParameter(
     planParameter: ToolPlanParameter,
     configuredParameters: GeneratorToolParameter[],
@@ -199,7 +192,9 @@ function toGenerationToolFromToolPlan(
         return {
             argName,
             sourceName: parameter.sourceName,
-            type: getTypeFromSchema(parameter.schema),
+            // Type is derived once by the planner (ToolPlan is the single source of
+            // truth); carry it through rather than re-deriving it from the schema here.
+            type: parameter.type,
             required: parameter.required,
             description: configuredParameter?.description || parameter.description,
             location: parameter.location,

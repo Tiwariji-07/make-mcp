@@ -263,6 +263,12 @@ export interface ToolSerializedParameter {
 export interface ToolPlanParameter {
     argName: string;
     sourceName: string;
+    // Coarse JSON-Schema type ("string" | "integer" | "number" | "boolean" |
+    // "array" | "object"), derived once by the planner from `schema`. This is the
+    // single source of truth for the parameter type: it flows through unchanged
+    // onto GenerationParam.type and is consumed by the targets (python arg hints,
+    // node's zod fallback when `schema` is absent). Targets never re-derive it.
+    type: string;
     location: ParamLocation;
     required: boolean;
     description: string;
