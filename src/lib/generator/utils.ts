@@ -56,10 +56,14 @@ export function toJsStringLiteral(str: string): string {
 export function toPythonStringLiteral(str: string): string {
     if (!str) return '""';
 
+    // \r must be escaped: Python treats a raw carriage return as a line
+    // terminator, so a CRLF inside a single-line "..." literal is a SyntaxError.
     const escaped = str
         .replace(/\\/g, "\\\\")
         .replace(/"/g, '\\"')
-        .replace(/\n/g, "\\n");
+        .replace(/\n/g, "\\n")
+        .replace(/\r/g, "\\r")
+        .replace(/\t/g, "\\t");
 
     return `"${escaped}"`;
 }

@@ -674,6 +674,55 @@ test("openapi -> python preview matches golden contract", () => {
     assert.doesNotMatch(readmeFile, /## Example MCP Client Config[\s\S]*"env"/);
 });
 
+test("python output escapes carriage returns from CRLF spec text", () => {
+    // CRLF line endings are common in real-world spec descriptions. A raw \r
+    // inside a single-line "..." literal is a Python SyntaxError, so every
+    // string routed through toPythonStringLiteral must escape it.
+    const crlfDescription = "Create a customer.\r\nReturns the new customer.";
+    const preview = createPreviewResponse({
+        ...openApiBase,
+        tools: [
+            {
+                ...openApiBase.tools[0],
+                description: crlfDescription,
+            },
+        ],
+        exportConfig: {
+            language: "python",
+            framework: "fastmcp",
+            packageManager: "npm",
+            features: {
+                documentation: true,
+                docker: false,
+                tests: true,
+                verification: true,
+            },
+        },
+    });
+
+    const pythonFiles = preview.files.filter((file) => file.name.endsWith(".py"));
+    assert.ok(pythonFiles.length > 0, "Expected generated Python files");
+    for (const file of pythonFiles) {
+        assert.ok(!file.content.includes("\r"), `${file.name} contains a raw carriage return`);
+    }
+
+    const serverFile = getFileContent(preview, "src/server.py");
+    assert.match(serverFile, /Create a customer\.\\r\\nReturns the new customer\./);
+
+    // The emitted source must actually parse: py_compile every generated module.
+    const tempDir = mkdtempSync(join(tmpdir(), "makemcp-crlf-"));
+    try {
+        for (const file of pythonFiles) {
+            const target = join(tempDir, file.name);
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, file.content);
+            execFileSync("python3", ["-m", "py_compile", target]);
+        }
+    } finally {
+        rmSync(tempDir, { recursive: true, force: true });
+    }
+});
+
 test("python preview emits title, output_schema, structured content, and read-only annotations for a GET with a response schema", () => {
     const apiModel = buildOpenAPIModel({
         openapi: "3.1.0",

@@ -622,6 +622,13 @@ export const useProjectStore = create<ProjectState>()(
 
                     const { spec, tools, authConfig, mcpServerAuthConfig, serverConfig, exportConfig } = JSON.parse(data);
 
+                    // Projects saved before the canonical migration lack
+                    // spec.apiModel, which generation now requires.
+                    if (!spec?.apiModel) {
+                        set({ error: "This saved project was created by an older version of MakeMCP. Re-import the spec to continue." });
+                        return;
+                    }
+
                     set({
                         spec,
                         specSource: spec?.info?.title || "Loaded Project",
@@ -676,6 +683,27 @@ export const useProjectStore = create<ProjectState>()(
         {
             name: "makemcp-storage",
             storage: createJSONStorage(() => safeLocalStorage),
+            // v2: the generator requires spec.apiModel (the canonical path is the
+            // only path). Sessions persisted before the canonical migration have a
+            // spec without apiModel and would throw deep inside generation, so
+            // migrate drops the stale working session and keeps only config/history.
+            version: 2,
+            migrate: (persistedState, version) => {
+                const persisted = (persistedState as PersistedProjectState | undefined) || {};
+
+                if (version < 2 && persisted.spec && !persisted.spec.apiModel) {
+                    return {
+                        ...persisted,
+                        spec: null,
+                        specSource: null,
+                        specFormat: null,
+                        tools: [],
+                        currentStep: "import" as const,
+                    };
+                }
+
+                return persisted;
+            },
             merge: (persistedState, currentState) => {
                 const persisted = (persistedState as PersistedProjectState | undefined) || {};
 

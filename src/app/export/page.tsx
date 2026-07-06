@@ -374,12 +374,13 @@ export default function ExportPage() {
       baseUrl: spec.baseUrl,
       apiModel: spec.apiModel,
     },
+    // Schemas are always derived from spec.apiModel (the generator's sole
+    // supported path), so tool/parameter schema blobs are not sent.
     tools: selectedTools.map((tool) => ({
       endpointId: tool.endpointId,
       enabled: tool.enabled,
       toolName: tool.toolName,
       description: tool.description,
-      bodySchema: spec.apiModel ? undefined : tool.bodySchema,
       bodyContentType: tool.bodyContentType,
       parameters: tool.parameters.map((parameter) => ({
         name: parameter.name,
@@ -388,7 +389,6 @@ export default function ExportPage() {
         required: parameter.required,
         description: parameter.description,
         location: parameter.location,
-        schema: spec.apiModel ? undefined : parameter.schema,
         hidden: parameter.hidden,
       })),
     })),
