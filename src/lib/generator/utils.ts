@@ -58,12 +58,16 @@ export function toPythonStringLiteral(str: string): string {
 
     // \r must be escaped: Python treats a raw carriage return as a line
     // terminator, so a CRLF inside a single-line "..." literal is a SyntaxError.
+    // Remaining C0 controls are escaped too: a raw NUL is a hard SyntaxError
+    // ("source code string cannot contain null bytes"), and VT/FF/ESC etc. are
+    // corruption-prone in emitted source.
     const escaped = str
         .replace(/\\/g, "\\\\")
         .replace(/"/g, '\\"')
         .replace(/\n/g, "\\n")
         .replace(/\r/g, "\\r")
-        .replace(/\t/g, "\\t");
+        .replace(/\t/g, "\\t")
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, (char) => `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`);
 
     return `"${escaped}"`;
 }

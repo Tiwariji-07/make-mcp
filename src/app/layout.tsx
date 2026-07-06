@@ -1,13 +1,17 @@
 import type { Metadata } from "next";
-import { Fira_Code } from "next/font/google";
+import localFont from "next/font/local";
 import { Analytics } from "@vercel/analytics/next";
 import { ThemeProvider } from "@/components/theme-provider";
 import "./globals.css";
 
-const firaCode = Fira_Code({
+// Fira Code is self-hosted so production builds don't depend on fonts.gstatic.com
+// (next/font/google fetches at build time, which breaks in network-restricted CI).
+// The file is the Fira Code v27 latin variable subset (weight 300-700, OFL licensed).
+const firaCode = localFont({
+  src: "./fonts/fira-code-latin-var.woff2",
   variable: "--font-fira",
-  subsets: ["latin"],
   display: "swap",
+  weight: "300 700",
 });
 
 export const metadata: Metadata = {

@@ -1269,7 +1269,7 @@ function renderPythonOperationBehaviorTest(tool: GenerationTool): string {
     const requestBody = tool.requestBody;
     const assertions: string[] = [
         `    assert call["method"] == ${JSON.stringify(tool.method)}`,
-        `    assert call["url"] == "https://unit.example.test${expectedPath}"`,
+        `    assert call["url"] == ${toPythonStringLiteral(`https://unit.example.test${expectedPath}`)}`,
         `    for item in ${toPythonLiteral(expectedQueryEntries)}:`,
         `        assert tuple(item) in call["params"]`,
     ];

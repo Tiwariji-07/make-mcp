@@ -125,10 +125,20 @@ function getBodyParameterDescription(schema: Record<string, unknown>, contentKin
     return description ? `${description} ${multipartDescription}` : multipartDescription;
 }
 
+// Coarse JSON-Schema type for a parameter, derived once here so ToolPlan is the
+// single source of truth. Flows through to GenerationParam.type unchanged.
+function getParameterType(schema?: Record<string, unknown>): string {
+    if (!schema) return "string";
+    if (schema.type === "array") return "array";
+    if (schema.type === "object" || schema.properties) return "object";
+    return typeof schema.type === "string" ? schema.type : "string";
+}
+
 function buildParameterPlans(parameters: ApiParameter[], seenArgs: Set<string>): ToolPlanParameter[] {
     return parameters.map((parameter, index) => ({
         argName: makeUniqueIdentifier(parameter.name, seenArgs, `param_${index + 1}`),
         sourceName: parameter.name,
+        type: getParameterType(parameter.schema),
         location: parameter.in,
         required: parameter.required,
         description: parameter.description || "",
@@ -154,6 +164,7 @@ function buildBodyParameterPlans(
         return Object.entries(getSchemaProperties(media.schema)).map(([name, schema], index) => ({
             argName: makeUniqueIdentifier(name, seenArgs, `body_${index + 1}`),
             sourceName: name,
+            type: getParameterType(schema),
             location: "body",
             required: requiredBody && requiredFields.has(name),
             description: getBodyParameterDescription(schema, contentKind),
@@ -164,6 +175,7 @@ function buildBodyParameterPlans(
     return [{
         argName: makeUniqueIdentifier("body", seenArgs, "body"),
         sourceName: "body",
+        type: getParameterType(media.schema),
         location: "body",
         required: requiredBody,
         description: media.schema.description as string || "",
