@@ -1145,7 +1145,7 @@ COPY package.json tsconfig.json ./
 RUN npm install
 COPY src ./src
 COPY tests ./tests
-COPY makemcp.manifest.json ./makemcp.manifest.json
+COPY mcpmint.manifest.json ./mcpmint.manifest.json
 RUN npm run build
 RUN npm prune --omit=dev
 
@@ -1493,7 +1493,7 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     files.set("src/api/client.ts", renderClient());
     files.set("src/api/operations.ts", renderOperations(plan));
     files.set("src/api/serialization.ts", renderSerialization());
-    files.set("makemcp.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("mcpmint.manifest.json", JSON.stringify(manifest, null, 2));
     files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {

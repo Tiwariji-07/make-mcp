@@ -211,7 +211,7 @@ function formatMcpServerAuthConfig(config: McpServerAuthConfig, transport: Trans
   return `${auth} · ${origins}`;
 }
 
-const GITHUB_REPO_URL = "https://github.com/Tiwariji-07/make-mcp";
+const GITHUB_REPO_URL = "https://github.com/mcpmint/mcpmint";
 
 // Snapshot of the exact config used for a completed generation, so the success
 // screen stays correct even if the user tweaks fields afterwards.
@@ -1552,7 +1552,7 @@ function SuccessView({
         {/* Star CTA */}
         <section className="border border-primary/30 bg-primary/[0.04] px-5 py-4 flex items-center justify-between gap-4">
           <div className="min-w-0">
-            <p className="text-sm font-medium text-foreground">Enjoying MakeMCP?</p>
+            <p className="text-sm font-medium text-foreground">Enjoying mcpmint?</p>
             <p className="text-xs text-muted-foreground">A star helps other developers find it.</p>
           </div>
           <Button asChild variant="outline" className="shrink-0 text-xs">

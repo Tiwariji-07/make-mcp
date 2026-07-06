@@ -1,10 +1,10 @@
-# MakeMCP
+# mcpmint — Generate MCP Servers in Your Browser
 
 <div align="center">
 
-**Bridge APIs to LLM Context**
+**Generate MCP servers in your browser**
 
-Transform OpenAPI specs and Postman Collections into type-safe Model Context Protocol (MCP) servers. Enable LLMs to interact with your APIs instantly.
+Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
@@ -29,8 +29,8 @@ Transform OpenAPI specs and Postman Collections into type-safe Model Context Pro
 
 ```bash
 # Clone the repository
-git clone https://github.com/Tiwariji-07/make-mcp.git
-cd make-mcp
+git clone https://github.com/mcpmint/mcpmint.git
+cd mcpmint
 
 # Install dependencies
 npm install
@@ -65,7 +65,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 ## 📂 Project Structure
 
 ```
-make-mcp/
+mcpmint/
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx              # Landing page (Hero)
@@ -115,7 +115,7 @@ npx tsc --noEmit
 
 ## 🧭 Architecture
 
-MakeMCP is designed as a compiler-style generator:
+mcpmint is designed as a compiler-style generator:
 
 ```text
 Source spec -> Canonical API model -> Tool plan -> Project plan -> Generated app -> Verification
@@ -132,6 +132,6 @@ MIT © [Tiwariji-07](https://github.com/Tiwariji-07)
 
 <div align="center">
 
-**[⭐ Star this repo](https://github.com/Tiwariji-07/make-mcp)** if you find it useful!
+**[⭐ Star this repo](https://github.com/mcpmint/mcpmint)** if you find it useful!
 
 </div>

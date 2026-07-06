@@ -20,6 +20,7 @@ const ThemeProviderContext = createContext<ThemeProviderState | undefined>(undef
 export function ThemeProvider({
     children,
     defaultTheme = "dark",
+    // Legacy localStorage key kept intentionally so existing users' saved theme survives the mcpmint rebrand.
     storageKey = "makemcp-theme",
 }: ThemeProviderProps) {
     const [theme, setTheme] = useState<Theme>(() => {

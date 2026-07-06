@@ -1,6 +1,6 @@
-# MakeMCP Architecture
+# mcpmint Architecture
 
-MakeMCP is a code generator. Its primary output is a standalone MCP server
+mcpmint is a code generator. Its primary output is a standalone MCP server
 project, not a dynamic proxy that interprets OpenAPI or Postman collections at
 runtime.
 
@@ -238,4 +238,4 @@ What is still pending:
   paths should be reconciled onto the canonical model as the single source of
   truth.
 - Full verification remains server-only and gated behind
-  `MAKEMCP_ALLOW_FULL_VERIFY`; the browser path runs fast/shape validation only.
+  `MCPMINT_ALLOW_FULL_VERIFY`; the browser path runs fast/shape validation only.

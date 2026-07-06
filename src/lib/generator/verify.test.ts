@@ -45,7 +45,7 @@ function makeNodeProject(): GeneratedProject {
             ["src/api/operations.ts", ""],
             ["src/api/serialization.ts", ""],
             ["tests/manifest.test.js", "import assert from 'node:assert/strict'; assert.equal(1, 1);\n"],
-            ["makemcp.manifest.json", "{}"],
+            ["mcpmint.manifest.json", "{}"],
         ]),
     };
 }
@@ -67,7 +67,7 @@ test("full node verification installs, builds, imports, and runs generated tests
 
 test("full node verification fails when required install command cannot spawn", () => {
     const originalPath = process.env.PATH;
-    const emptyPath = mkdtempSync(join(tmpdir(), "makemcp-empty-path-"));
+    const emptyPath = mkdtempSync(join(tmpdir(), "mcpmint-empty-path-"));
 
     try {
         process.env.PATH = emptyPath;

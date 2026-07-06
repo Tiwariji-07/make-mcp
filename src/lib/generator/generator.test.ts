@@ -710,7 +710,7 @@ test("python output escapes carriage returns from CRLF spec text", () => {
     assert.match(serverFile, /Create a customer\.\\r\\nReturns the new customer\./);
 
     // The emitted source must actually parse: py_compile every generated module.
-    const tempDir = mkdtempSync(join(tmpdir(), "makemcp-crlf-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "mcpmint-crlf-"));
     try {
         for (const file of pythonFiles) {
             const target = join(tempDir, file.name);
@@ -2037,7 +2037,7 @@ function runPythonCompactServer(
     preview: ReturnType<typeof createPreviewResponse>,
     calls: Array<{ tool: string; args: Record<string, unknown> }>
 ): Array<Record<string, unknown>> {
-    const tempDir = mkdtempSync(join(tmpdir(), "makemcp-pycompact-"));
+    const tempDir = mkdtempSync(join(tmpdir(), "mcpmint-pycompact-"));
     try {
         for (const file of preview.files) {
             const absolute = join(tempDir, file.name);

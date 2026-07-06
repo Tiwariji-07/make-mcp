@@ -17,10 +17,10 @@ const firaCode = localFont({
 
 export const metadata: Metadata = {
   title: {
-    default: "MakeMCP - Generate MCP Servers from API Specs",
-    template: "%s | MakeMCP",
+    default: "mcpmint — Generate MCP Servers in Your Browser",
+    template: "%s | mcpmint",
   },
-  description: "Transform OpenAPI and Postman specs into production-ready Model Context Protocol (MCP) servers. Enable LLMs to interact with your APIs instantly. Zero coding required.",
+  description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
   keywords: [
     "MCP",
     "Model Context Protocol",
@@ -35,23 +35,23 @@ export const metadata: Metadata = {
     "Code Generator",
     "MCP Server"
   ],
-  authors: [{ name: "MakeMCP" }],
-  creator: "MakeMCP",
+  authors: [{ name: "mcpmint" }],
+  creator: "mcpmint",
   metadataBase: new URL(SITE_URL),
   openGraph: {
     type: "website",
     locale: "en_US",
     url: SITE_URL,
-    siteName: "MakeMCP",
-    title: "MakeMCP - Bridge APIs to LLM Context",
-    description: "Transform OpenAPI and Postman specs into production-ready MCP servers. Enable LLMs to interact with your APIs instantly.",
+    siteName: "mcpmint",
+    title: "mcpmint — Generate MCP Servers in Your Browser",
+    description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
     // Social card image is generated dynamically via src/app/opengraph-image.tsx
     // (Next.js auto-wires the file-based convention).
   },
   twitter: {
     card: "summary_large_image",
-    title: "MakeMCP - Generate MCP Servers from API Specs",
-    description: "Transform OpenAPI and Postman specs into production-ready MCP servers for LLMs.",
+    title: "mcpmint — Generate MCP Servers in Your Browser",
+    description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
     // Twitter card image is generated dynamically via src/app/twitter-image.tsx.
   },
   robots: {
@@ -88,6 +88,7 @@ export default function RootLayout({
         className={`${firaCode.variable} bg-mesh min-h-screen`}
         style={{ fontFamily: "'Fira Code', monospace" }}
       >
+        {/* Legacy storage key kept intentionally so existing users' saved theme survives the mcpmint rebrand */}
         <ThemeProvider defaultTheme="dark" storageKey="makemcp-theme">
           {children}
         </ThemeProvider>

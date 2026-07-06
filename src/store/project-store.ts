@@ -494,7 +494,7 @@ const safeLocalStorage = {
         } catch (e) {
             // Quota exceeded (e.g. an oversized spec) or storage unavailable.
             // Keep the in-memory session working; just skip persistence.
-            console.warn("makemcp: unable to persist session (storage full or unavailable)", e);
+            console.warn("mcpmint: unable to persist session (storage full or unavailable)", e);
         }
     },
     removeItem: (name: string): void => {
@@ -592,7 +592,9 @@ export const useProjectStore = create<ProjectState>()(
                     savedAt: Date.now(),
                 };
 
-                // Store project data separately
+                // Store project data separately.
+                // NOTE: the "makemcp-project-*" key prefix is kept deliberately so
+                // existing users' saved projects survive the mcpmint rebrand.
                 try {
                     localStorage.setItem(
                         `makemcp-project-${project.id}`,
@@ -625,7 +627,7 @@ export const useProjectStore = create<ProjectState>()(
                     // Projects saved before the canonical migration lack
                     // spec.apiModel, which generation now requires.
                     if (!spec?.apiModel) {
-                        set({ error: "This saved project was created by an older version of MakeMCP. Re-import the spec to continue." });
+                        set({ error: "This saved project was created by an older version of mcpmint. Re-import the spec to continue." });
                         return;
                     }
 
@@ -681,6 +683,7 @@ export const useProjectStore = create<ProjectState>()(
             }),
         }),
         {
+            // Legacy persist key kept intentionally so existing users' sessions survive the mcpmint rebrand.
             name: "makemcp-storage",
             storage: createJSONStorage(() => safeLocalStorage),
             // v2: the generator requires spec.apiModel (the canonical path is the

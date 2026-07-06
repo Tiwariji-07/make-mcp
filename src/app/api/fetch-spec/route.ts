@@ -193,7 +193,7 @@ async function safeFetch(startUrl: URL, signal: AbortSignal): Promise<Response> 
             headers: {
                 // Ask upstream for a spec; many servers content-negotiate.
                 Accept: "application/json, application/yaml, text/yaml, text/plain, */*",
-                "User-Agent": "MakeMCP-SpecFetcher/1.0",
+                "User-Agent": "mcpmint-spec-fetcher/1.0",
             },
         });
 
