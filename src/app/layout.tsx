@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import localFont from "next/font/local";
 import { Analytics } from "@vercel/analytics/next";
 import { ThemeProvider } from "@/components/theme-provider";
+import { SITE_URL } from "@/lib/site";
 import "./globals.css";
 
 // Fira Code is self-hosted so production builds don't depend on fonts.gstatic.com
@@ -36,11 +37,11 @@ export const metadata: Metadata = {
   ],
   authors: [{ name: "MakeMCP" }],
   creator: "MakeMCP",
-  metadataBase: new URL("https://make-mcp.vercel.app"),
+  metadataBase: new URL(SITE_URL),
   openGraph: {
     type: "website",
     locale: "en_US",
-    url: "https://make-mcp.vercel.app",
+    url: SITE_URL,
     siteName: "MakeMCP",
     title: "MakeMCP - Bridge APIs to LLM Context",
     description: "Transform OpenAPI and Postman specs into production-ready MCP servers. Enable LLMs to interact with your APIs instantly.",
@@ -65,7 +66,7 @@ export const metadata: Metadata = {
     },
   },
   alternates: {
-    canonical: "https://make-mcp.vercel.app",
+    canonical: SITE_URL,
   },
 };
 
