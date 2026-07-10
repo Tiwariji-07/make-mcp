@@ -1,9 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
-import { isIP, BlockList } from "node:net";
+import { isIP } from "node:net";
+import { isBlockedIp } from "@/lib/api/ssrf";
+import { pinnedGet } from "@/lib/api/pinned-fetch";
+import {
+    checkRateLimit,
+    PayloadTooLargeError,
+    readJsonBodyCapped,
+} from "@/lib/api/request-guards";
 
 // ---------------------------------------------------------------------------
-// Server-side spec-fetch proxy (Wave 2)
+// Server-side spec-fetch proxy
 // ---------------------------------------------------------------------------
 // PURPOSE: Fetch a user-supplied OpenAPI/Swagger/Postman spec URL SERVER-SIDE
 // so the browser is not blocked by CORS. We return the RAW spec TEXT to the
@@ -11,26 +18,17 @@ import { isIP, BlockList } from "node:net";
 //
 // SECURITY (SSRF): This route makes outbound requests to attacker-controllable
 // URLs, so it is an SSRF sink and is hardened accordingly:
-//   1. Scheme allowlist  — only http/https. file:, gopher:, data:, etc. rejected.
-//   2. IP validation     — the hostname is resolved to its IP(s) and EVERY
-//      resolved address is checked against a blocklist of private/reserved
-//      ranges (loopback, RFC1918, link-local incl. 169.254.169.254 cloud
-//      metadata, IPv6 ULA, 0.0.0.0, etc.). Literal-IP hosts are validated too.
-//      Validating the RESOLVED address (not just the literal host) defends
-//      against hostnames that point at internal IPs.
-//   3. Redirects         — automatic following is DISABLED (redirect:"manual").
-//      Each redirect hop's Location is re-validated through the same anti-SSRF
-//      check before we follow it, and hops are capped. This closes the
-//      "public host 302-redirects to 169.254.169.254" bypass. A residual TOCTOU
-//      / DNS-rebinding window remains (we validate the resolved IP, then fetch
-//      by hostname which re-resolves); the redirect cap + per-hop revalidation
-//      keep the blast radius small without pinning the socket to the IP, which
-//      the platform fetch does not support.
-//   4. Size cap          — the response body is streamed and aborted once it
-//      exceeds MAX_SPEC_BYTES, so a malicious/huge upstream cannot exhaust memory.
-//   5. Timeout           — a per-request AbortController caps total time.
-//   6. Clean errors      — blocked/invalid URLs => 400, upstream problems =>
-//      502/504, without leaking internal hostnames/IPs/stack traces.
+//   1. Scheme allowlist  — only http/https.
+//   2. IP validation     — resolved address(es) checked against private/reserved
+//      ranges, including IPv4-mapped IPv6 hex forms (::ffff:7f00:1).
+//   3. DNS pin           — the socket is dialed to the validated IP via a custom
+//      lookup; the hostname is NOT re-resolved at connect time (closes
+//      rebinding TOCTOU between assertUrlIsSafe and fetch).
+//   4. Redirects         — manual follow with per-hop revalidation + hop cap.
+//   5. Size cap          — response body streamed and aborted past MAX_SPEC_BYTES.
+//   6. Timeout           — per-request AbortController.
+//   7. Rate limit        — shared limiter (Upstash if configured, else memory).
+//   8. Clean errors      — no internal hostnames/IPs/stack traces.
 // ---------------------------------------------------------------------------
 
 const MAX_SPEC_BYTES = 5 * 1024 * 1024; // 5MB
@@ -38,53 +36,23 @@ const REQUEST_TIMEOUT_MS = 10_000; // 10s
 const MAX_REDIRECTS = 5;
 const MAX_INCOMING_BODY_BYTES = 16 * 1024; // the incoming { url } body is tiny
 
-// Blocklist of private / reserved / internal IP ranges. Any resolved address
-// that falls inside these is rejected.
-const blockedV4 = new BlockList();
-blockedV4.addSubnet("0.0.0.0", 8, "ipv4"); // "this" network / 0.0.0.0
-blockedV4.addSubnet("10.0.0.0", 8, "ipv4"); // RFC1918
-blockedV4.addSubnet("100.64.0.0", 10, "ipv4"); // CGNAT (RFC6598)
-blockedV4.addSubnet("127.0.0.0", 8, "ipv4"); // loopback
-blockedV4.addSubnet("169.254.0.0", 16, "ipv4"); // link-local incl. 169.254.169.254 metadata
-blockedV4.addSubnet("172.16.0.0", 12, "ipv4"); // RFC1918
-blockedV4.addSubnet("192.0.0.0", 24, "ipv4"); // IETF protocol assignments
-blockedV4.addSubnet("192.168.0.0", 16, "ipv4"); // RFC1918
-blockedV4.addSubnet("198.18.0.0", 15, "ipv4"); // benchmarking
-blockedV4.addSubnet("224.0.0.0", 4, "ipv4"); // multicast
-blockedV4.addSubnet("240.0.0.0", 4, "ipv4"); // reserved
-
-const blockedV6 = new BlockList();
-blockedV6.addAddress("::", "ipv6"); // unspecified
-blockedV6.addAddress("::1", "ipv6"); // loopback
-blockedV6.addSubnet("fc00::", 7, "ipv6"); // unique-local (ULA)
-blockedV6.addSubnet("fe80::", 10, "ipv6"); // link-local
-blockedV6.addSubnet("ff00::", 8, "ipv6"); // multicast
-
-/** True if the given IP literal is inside a blocked private/reserved range. */
-function isBlockedIp(ip: string): boolean {
-    const family = isIP(ip);
-    if (family === 4) {
-        return blockedV4.check(ip, "ipv4");
-    }
-    if (family === 6) {
-        // IPv4-mapped IPv6 (::ffff:127.0.0.1) — extract and re-check as v4.
-        const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-        if (mapped && isIP(mapped[1]) === 4) {
-            return blockedV4.check(mapped[1], "ipv4");
-        }
-        return blockedV6.check(ip, "ipv6");
-    }
-    // Not a valid IP literal — treat as blocked (fail closed).
-    return true;
-}
+export const maxDuration = 15;
 
 class BlockedUrlError extends Error {}
 
+/** A URL whose host has been resolved and pinned to a single safe address. */
+interface SafeTarget {
+    url: URL;
+    /** Validated IP that the socket will connect to (no second DNS lookup). */
+    pinnedIp: string;
+}
+
 /**
- * Validate a URL for SSRF safety: scheme allowlist + resolve host and reject if
- * any resolved address is private/reserved. Throws BlockedUrlError on rejection.
+ * Validate a URL for SSRF safety and return a pinned target.
+ * Scheme allowlist + resolve host; reject if any resolved address is private.
+ * The returned pinnedIp is used for the actual TCP connection.
  */
-async function assertUrlIsSafe(rawUrl: string): Promise<URL> {
+async function assertUrlIsSafe(rawUrl: string): Promise<SafeTarget> {
     let url: URL;
     try {
         url = new URL(rawUrl);
@@ -101,18 +69,19 @@ async function assertUrlIsSafe(rawUrl: string): Promise<URL> {
         throw new BlockedUrlError("URL is missing a host.");
     }
 
-    // If the host is already an IP literal, validate it directly.
-    const literalFamily = isIP(hostname) || isIP(hostname.replace(/^\[|\]$/g, ""));
-    if (literalFamily) {
-        const literal = hostname.replace(/^\[|\]$/g, "");
-        if (isBlockedIp(literal)) {
+    // If the host is already an IP literal, validate and pin to it directly.
+    const literalHost = hostname.replace(/^\[|\]$/g, "");
+    if (isIP(literalHost)) {
+        if (isBlockedIp(literalHost)) {
             throw new BlockedUrlError("URL resolves to a blocked address.");
         }
-        return url;
+        return { url, pinnedIp: literalHost };
     }
 
     // Otherwise resolve the hostname to its IP(s) and validate EVERY one.
-    let addresses: { address: string }[];
+    // Fail closed if any address is private/reserved (mixed public+private is
+    // treated as blocked — common rebinding staging pattern).
+    let addresses: { address: string; family: number }[];
     try {
         addresses = await lookup(hostname, { all: true });
     } catch {
@@ -129,7 +98,9 @@ async function assertUrlIsSafe(rawUrl: string): Promise<URL> {
         }
     }
 
-    return url;
+    // Prefer IPv4 for the pin (broader reachability); fall back to first entry.
+    const preferred = addresses.find((entry) => entry.family === 4) || addresses[0];
+    return { url, pinnedIp: preferred.address };
 }
 
 /** Detect a content hint from the URL/content-type to help the client. */
@@ -145,7 +116,6 @@ function detectContentHint(contentType: string | null, url: string): "json" | "y
 
 /** Read a response body, aborting if it exceeds the size cap. */
 async function readCappedBody(response: Response): Promise<string> {
-    // Fast reject on an honest Content-Length that already exceeds the cap.
     const declared = Number(response.headers.get("content-length"));
     if (Number.isFinite(declared) && declared > MAX_SPEC_BYTES) {
         throw new BlockedUrlError("Spec is too large.");
@@ -180,18 +150,15 @@ async function readCappedBody(response: Response): Promise<string> {
 
 /**
  * Fetch a URL with manual redirect handling. Each hop is anti-SSRF-validated
- * before being followed; redirects are capped.
+ * and the TCP connection is pinned to the validated IP (no DNS rebinding window).
  */
-async function safeFetch(startUrl: URL, signal: AbortSignal): Promise<Response> {
-    let currentUrl = startUrl;
+async function safeFetch(start: SafeTarget, signal: AbortSignal): Promise<Response> {
+    let current = start;
 
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-        const response = await fetch(currentUrl, {
-            method: "GET",
-            redirect: "manual",
+        const response = await pinnedGet(current.url, current.pinnedIp, {
             signal,
             headers: {
-                // Ask upstream for a spec; many servers content-negotiate.
                 Accept: "application/json, application/yaml, text/yaml, text/plain, */*",
                 "User-Agent": "mcpmint-spec-fetcher/1.0",
             },
@@ -205,7 +172,6 @@ async function safeFetch(startUrl: URL, signal: AbortSignal): Promise<Response> 
         }
 
         const location = response.headers.get("location");
-        // Drain the redirect response body so the connection can be reused/closed.
         await response.body?.cancel().catch(() => {});
 
         if (!location) {
@@ -215,54 +181,53 @@ async function safeFetch(startUrl: URL, signal: AbortSignal): Promise<Response> 
             throw new BlockedUrlError("Too many redirects.");
         }
 
-        // Resolve relative redirect targets against the current URL, then
-        // re-validate the destination before following it.
-        const nextUrl = new URL(location, currentUrl);
-        currentUrl = await assertUrlIsSafe(nextUrl.toString());
+        // Resolve relative redirects against the current URL, then re-validate
+        // and re-pin before following.
+        const nextUrl = new URL(location, current.url);
+        current = await assertUrlIsSafe(nextUrl.toString());
     }
 
-    // Unreachable (loop returns or throws), but satisfies the type checker.
     throw new BlockedUrlError("Too many redirects.");
 }
 
 export async function POST(request: NextRequest) {
-    // Guard against oversized incoming bodies before parsing JSON.
-    const contentLength = Number(request.headers.get("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > MAX_INCOMING_BODY_BYTES) {
-        return NextResponse.json({ error: "Request body too large." }, { status: 413 });
+    const rate = await checkRateLimit(request, "fetch-spec");
+    if (rate.limited) {
+        return NextResponse.json(
+            { error: "Too many requests. Please slow down and try again shortly." },
+            { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } }
+        );
     }
 
     let url: string;
     try {
-        const body = (await request.json()) as { url?: unknown };
+        const body = await readJsonBodyCapped<{ url?: unknown }>(request, MAX_INCOMING_BODY_BYTES);
         if (typeof body.url !== "string" || !body.url.trim()) {
             return NextResponse.json({ error: "A spec URL is required." }, { status: 400 });
         }
         url = body.url.trim();
-    } catch {
+    } catch (error) {
+        if (error instanceof PayloadTooLargeError) {
+            return NextResponse.json({ error: "Request payload too large." }, { status: 413 });
+        }
         return NextResponse.json({ error: "Invalid request body." }, { status: 400 });
     }
 
-    // 1 + 2: scheme allowlist + resolved-IP validation.
-    let safeUrl: URL;
+    let safeTarget: SafeTarget;
     try {
-        safeUrl = await assertUrlIsSafe(url);
+        safeTarget = await assertUrlIsSafe(url);
     } catch (error) {
         const message = error instanceof BlockedUrlError ? error.message : "This URL cannot be fetched.";
         return NextResponse.json({ error: message }, { status: 400 });
     }
 
-    // 5: timeout via AbortController.
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
     try {
-        // 3: manual redirects, each hop revalidated.
-        const response = await safeFetch(safeUrl, controller.signal);
+        const response = await safeFetch(safeTarget, controller.signal);
 
         if (!response.ok) {
-            // Upstream reachable but returned an error status. Surface a clean
-            // 502 without leaking internal detail.
             await response.body?.cancel().catch(() => {});
             return NextResponse.json(
                 { error: `The spec URL responded with status ${response.status}.` },
@@ -270,24 +235,21 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // 4: size-capped body read.
         const text = await readCappedBody(response);
 
         if (!text.trim()) {
             return NextResponse.json({ error: "The spec URL returned an empty response." }, { status: 502 });
         }
 
-        const hint = detectContentHint(response.headers.get("content-type"), safeUrl.toString());
+        const hint = detectContentHint(response.headers.get("content-type"), safeTarget.url.toString());
         return NextResponse.json({ content: text, contentHint: hint });
     } catch (error) {
         if (error instanceof BlockedUrlError) {
-            // A blocked redirect target or size overflow — treat as a bad request.
             return NextResponse.json({ error: error.message }, { status: 400 });
         }
         if (error instanceof Error && error.name === "AbortError") {
             return NextResponse.json({ error: "The spec URL timed out." }, { status: 504 });
         }
-        // Network-level failure (DNS mid-flight, connection refused, TLS, etc.).
         return NextResponse.json({ error: "Could not fetch the spec URL." }, { status: 502 });
     } finally {
         clearTimeout(timeout);

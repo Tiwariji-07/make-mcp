@@ -5,99 +5,87 @@ import {
     createPreviewResponse,
 } from "@/lib/generator";
 import { parseGeneratorRequestPayload } from "@/lib/generator/request";
+import type { GeneratorRequest } from "@/lib/generator/types";
+import {
+    checkRateLimit,
+    isFullVerifyAllowed,
+    isProcessVerificationAllowed,
+    PayloadTooLargeError,
+    readJsonBodyCapped,
+} from "@/lib/api/request-guards";
 
-// Reject oversized payloads before parsing (finding H2/R1). request.json() is
-// otherwise unbounded; a huge body can exhaust memory during parse. ~5MB is
-// generous for realistic API specs.
+// Reject oversized payloads before parsing. ~5MB is generous for realistic API
+// specs; the body is streamed with a hard byte budget (not Content-Length alone).
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
-// --- Best-effort in-memory rate limiter (finding H2) -----------------------
-// Fixed-window per-IP counter. This is BEST-EFFORT and PER-INSTANCE only: it
-// does not survive restarts and is not shared across serverless instances or
-// horizontally-scaled replicas. For production-grade, durable limiting use a
-// shared store (e.g. Upstash Redis / Vercel KV) keyed by IP.
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const RATE_LIMIT_MAX_REQUESTS = 20;
-
-interface RateWindow {
-    count: number;
-    resetAt: number;
-}
-
-const rateLimitBuckets = new Map<string, RateWindow>();
-
-function getClientIp(request: NextRequest): string {
-    const forwardedFor = request.headers.get("x-forwarded-for");
-    if (forwardedFor) {
-        // First hop is the originating client.
-        const firstHop = forwardedFor.split(",")[0]?.trim();
-        if (firstHop) {
-            return firstHop;
-        }
-    }
-
-    return "unknown";
-}
-
-function isRateLimited(ip: string): boolean {
-    const now = Date.now();
-    const existing = rateLimitBuckets.get(ip);
-
-    if (!existing || now >= existing.resetAt) {
-        rateLimitBuckets.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW_MS });
-
-        // Opportunistically evict expired buckets so the map does not grow
-        // unbounded on a busy instance.
-        if (rateLimitBuckets.size > 10_000) {
-            for (const [key, window] of rateLimitBuckets) {
-                if (now >= window.resetAt) {
-                    rateLimitBuckets.delete(key);
-                }
-            }
-        }
-
-        return false;
-    }
-
-    existing.count += 1;
-    return existing.count > RATE_LIMIT_MAX_REQUESTS;
-}
-
-// Full verification runs npm install/build/test or a Python venv + pip install
-// synchronously in the request path (verify.ts) — a trivial DoS. It is gated
-// off unless explicitly enabled on the server (finding R1).
-function isFullVerifyAllowed(): boolean {
-    return process.env.MCPMINT_ALLOW_FULL_VERIFY === "1";
-}
+// Keep generate/preview within a predictable serverless budget. Process-spawning
+// verification is off by default on the public path, so this stays short.
+export const maxDuration = 60;
 
 // Mirror the request-validation charset so the value placed into the
 // Content-Disposition header can never contain quotes, newlines or path
-// separators (header-injection defense, finding M1/R7).
+// separators (header-injection defense).
 function sanitizeFilename(name: string): string {
     const cleaned = name.replace(/[^a-zA-Z0-9._-]/g, "-").replace(/^[.-]+/, "").slice(0, 64);
     return cleaned.length > 0 ? cleaned : "mcp-server";
 }
 
+/**
+ * On the public server path, never spawn tsc/npm/pip unless the operator has
+ * explicitly opted in. Clients may still request verification; we strip it
+ * server-side so it cannot be used as a free DoS.
+ */
+function applyPublicVerificationPolicy(body: GeneratorRequest): GeneratorRequest {
+    const wantsFull = body.exportConfig.verificationMode === "full";
+    if (wantsFull && !isFullVerifyAllowed()) {
+        // Caller will reject with 400 before generation when full is requested
+        // but disabled — keep mode intact so the check can fire.
+        return body;
+    }
+
+    if (isProcessVerificationAllowed()) {
+        return body;
+    }
+
+    return {
+        ...body,
+        exportConfig: {
+            ...body.exportConfig,
+            // Force off process-based verification on the public path.
+            verificationMode: "fast",
+            features: {
+                ...body.exportConfig.features,
+                verification: false,
+            },
+        },
+    };
+}
+
 export async function POST(request: NextRequest) {
-    const clientIp = getClientIp(request);
-    if (isRateLimited(clientIp)) {
+    const rate = await checkRateLimit(request, "generate");
+    if (rate.limited) {
         return NextResponse.json(
             { error: "Too many requests. Please slow down and try again shortly." },
-            { status: 429 }
+            { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } }
         );
     }
 
-    const contentLength = Number(request.headers.get("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > MAX_BODY_BYTES) {
-        return NextResponse.json(
-            { error: "Request payload too large." },
-            { status: 413 }
-        );
-    }
-
-    let body;
+    let rawBody: unknown;
     try {
-        body = parseGeneratorRequestPayload(await request.json());
+        rawBody = await readJsonBodyCapped(request, MAX_BODY_BYTES);
+    } catch (error) {
+        if (error instanceof PayloadTooLargeError) {
+            return NextResponse.json({ error: "Request payload too large." }, { status: 413 });
+        }
+        return NextResponse.json(
+            { error: "Invalid request payload." },
+            { status: 400 }
+        );
+    }
+
+    let body: GeneratorRequest;
+    try {
+        body = parseGeneratorRequestPayload(rawBody);
     } catch (error) {
         if (error instanceof ZodError) {
             return NextResponse.json(
@@ -106,7 +94,6 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // Malformed JSON etc.
         return NextResponse.json(
             { error: "Invalid request payload." },
             { status: 400 }
@@ -119,6 +106,8 @@ export async function POST(request: NextRequest) {
             { status: 400 }
         );
     }
+
+    body = applyPublicVerificationPolicy(body);
 
     try {
         const isPreview = request.nextUrl.searchParams.get("preview") === "true";

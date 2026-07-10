@@ -53,8 +53,16 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Generator + parser tests
+      - name: Generator + parser + API unit tests
         run: npm run test:generator
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Full generated Node and Python verification
+        run: npm run test:generated:full
 
       - name: Build CLI bundle
         run: npm ci && npm run build

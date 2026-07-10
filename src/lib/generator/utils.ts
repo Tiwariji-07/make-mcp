@@ -43,12 +43,17 @@ export function makeUniqueIdentifier(
 export function toJsStringLiteral(str: string): string {
     if (!str) return '""';
 
+    // Mirror Python escaping: remaining C0 controls become \xHH so emitted
+    // TypeScript source stays clean for tooling (and matches hardening tests).
     const escaped = str
         .replace(/\\/g, "\\\\")
         .replace(/"/g, '\\"')
         .replace(/\n/g, "\\n")
         .replace(/\r/g, "\\r")
-        .replace(/\t/g, "\\t");
+        .replace(/\t/g, "\\t")
+        .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, (char) =>
+            `\\x${char.charCodeAt(0).toString(16).padStart(2, "0")}`
+        );
 
     return `"${escaped}"`;
 }
@@ -182,7 +187,9 @@ export function getDefaultFeatures(exportConfig: GeneratorExportConfig): Generat
         documentation: exportConfig.features?.documentation ?? true,
         docker: exportConfig.features?.docker ?? false,
         tests: exportConfig.features?.tests ?? true,
-        verification: exportConfig.features?.verification ?? true,
+        // Process-spawning verification is opt-in; default off so public and
+        // client paths do not pay tsc/npm cost unless the user enables it.
+        verification: exportConfig.features?.verification ?? false,
     };
 }
 

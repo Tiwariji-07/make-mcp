@@ -40,7 +40,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/ui/copy-button";
 import { AuthConfig, ExportConfig, McpServerAuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
 import { buildToolPlans } from "@/lib/generator/planner";
-import { generateProjectInBrowser } from "@/lib/client-generate";
+import { generateProjectInBrowser, previewProjectInBrowser } from "@/lib/client-generate";
 
 interface PreviewFile {
   name: string;
@@ -61,7 +61,13 @@ interface PreviewData {
     framework?: string;
     transport?: string;
     toolCount: number;
-    features: Record<string, boolean>;
+    features: {
+      documentation?: boolean;
+      docker?: boolean;
+      tests?: boolean;
+      verification?: boolean;
+      [key: string]: boolean | undefined;
+    };
   };
   validation?: {
     errors: PreviewIssue[];
@@ -96,7 +102,7 @@ const defaultExportFeatures = {
   documentation: true,
   docker: false,
   tests: true,
-  verification: true,
+  verification: false,
 };
 
 function getDetectedAuthOptions(spec: ParsedSpec): AuthConfig[] {
@@ -202,12 +208,14 @@ function formatAuthConfig(config: AuthConfig): string {
   return getAuthLabel(config.type);
 }
 
-function formatMcpServerAuthConfig(config: McpServerAuthConfig, transport: Transport, language: ExportConfig["language"]): string {
+function formatMcpServerAuthConfig(config: McpServerAuthConfig, transport: Transport): string {
   if (transport === "stdio") return "Not applicable";
-  const auth = language === "python"
-    ? config.type === "bearer" ? "Bearer placeholder" : "No generated enforcement"
-    : config.type === "bearer" ? "Bearer via MCP_AUTH_TOKEN" : "None";
-  const origins = config.allowedOrigins.length > 0 ? `${config.allowedOrigins.length} origin${config.allowedOrigins.length === 1 ? "" : "s"}` : "any origin";
+  // Node and Python both emit access middleware: optional bearer (MCP_AUTH_TOKEN)
+  // plus Origin allow-list with localhost-only deny-by-default when empty.
+  const auth = config.type === "bearer" ? "Bearer via MCP_AUTH_TOKEN" : "None";
+  const origins = config.allowedOrigins.length > 0
+    ? `${config.allowedOrigins.length} origin${config.allowedOrigins.length === 1 ? "" : "s"}`
+    : "localhost only (deny-by-default)";
   return `${auth} · ${origins}`;
 }
 
@@ -418,14 +426,13 @@ export default function ExportPage() {
     ...(selectedTools.length === 0 ? ["Select at least one endpoint before generating."] : []),
     ...(!isPortValid ? ["Server port must be between 1 and 65535."] : []),
     ...(!isAuthValid ? ["API key authentication needs a key name."] : []),
-    ...(isHttpTransport && mcpServerAuthConfig.type === "none" ? [exportConfig.language === "python"
-      ? "Python FastMCP HTTP/SSE output does not enforce MCP server bearer auth. Bind to localhost or put it behind an authenticated reverse proxy."
-      : "HTTP/SSE MCP server access has no bearer token configured. Bind to localhost, or select bearer auth and set MCP_AUTH_TOKEN before exposing this server."] : []),
+    ...(isHttpTransport && mcpServerAuthConfig.type === "none" ? [
+      "HTTP/SSE MCP server access has no bearer token configured. Generated servers still deny non-localhost Origin headers by default; bind to localhost, or select bearer auth and set MCP_AUTH_TOKEN before exposing this server.",
+    ] : []),
     ...(isHttpTransport && isWildcardHost && mcpServerAuthConfig.type === "none" ? ["Host is 0.0.0.0 and MCP server access auth is none. This can expose the MCP server to the network."] : []),
-    ...(isHttpTransport && exportConfig.language === "python" && (mcpServerAuthConfig.type !== "none" || mcpServerAuthConfig.allowedOrigins.length > 0) ? ["Python FastMCP output includes MCP server access config placeholders, but generated code does not enforce them. Use a reverse proxy for HTTP/SSE auth."] : []),
     ...(duplicateToolNames.length > 0 ? [`Duplicate tool names will be renamed during generation: ${[...new Set(duplicateToolNames)].join(", ")}.`] : []),
     ...(manualReviewEndpoints.length > 0 ? [`${manualReviewEndpoints.length} selected endpoint${manualReviewEndpoints.length === 1 ? "" : "s"} need manual review.`] : []),
-    ...(!exportFeatures.verification ? ["Post-generation verification is disabled."] : []),
+    ...(!exportFeatures.verification ? ["Post-generation verification is disabled (default). Enable only when using server-side generation on a host that allows process verify."] : []),
     ...(spec.baseUrl ? [] : ["No base URL was detected; generated code will use the configured fallback."]),
   ];
   const previewWarnings = [
@@ -528,15 +535,35 @@ export default function ExportPage() {
     setIsPreviewing(true);
     setError(null);
     try {
-      const res = await fetch("/api/generate?preview=true", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(generatorPayload),
-      });
-      if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
-      const data = await res.json();
-      setPreviewFiles(data.files || []);
-      setPreviewData(data);
+      if (browserMode) {
+        // Privacy mode: preview entirely in-browser so the apiModel never uploads.
+        const data = previewProjectInBrowser(generatorPayload);
+        setPreviewFiles(data.files || []);
+        setPreviewData({
+          files: data.files,
+          manifest: data.manifest
+            ? {
+                generatorVersion: data.manifest.generatorVersion,
+                language: data.manifest.language,
+                framework: data.manifest.framework,
+                transport: data.manifest.transport,
+                toolCount: data.manifest.toolCount,
+                features: { ...data.manifest.features },
+              }
+            : undefined,
+          validation: data.validation,
+        });
+      } else {
+        const res = await fetch("/api/generate?preview=true", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(generatorPayload),
+        });
+        if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
+        const data = await res.json();
+        setPreviewFiles(data.files || []);
+        setPreviewData(data);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Preview failed");
     } finally {
@@ -679,7 +706,7 @@ export default function ExportPage() {
                   />
                   <FeatureToggle
                     label="Verification"
-                    description="Verify generated output before export"
+                    description="Server-side process checks (tsc/install). Off by default; requires server mode and host opt-in."
                     checked={exportFeatures.verification}
                     onCheckedChange={(checked) => setExportConfig({ features: { verification: checked } })}
                   />
@@ -784,21 +811,16 @@ export default function ExportPage() {
                         className="h-8 bg-background border-border text-xs focus:border-primary"
                       />
                       <p className="text-[11px] leading-relaxed text-muted-foreground">
-                        {exportConfig.language === "python"
-                          ? "Generated FastMCP output includes MCP_ALLOWED_ORIGINS as a placeholder only. Enforce allowed origins in a reverse proxy or gateway."
-                          : "Generated HTTP/SSE servers reject disallowed Origin headers and answer CORS preflight requests for allowed origins. Leave blank to allow any origin."}
+                        Generated HTTP/SSE servers reject disallowed Origin headers (Node and Python) and answer CORS preflight for allowed origins.
+                        Leave blank to allow only localhost origins (deny-by-default). Non-localhost browser clients must set MCP_ALLOWED_ORIGINS
+                        (comma-separated full origins such as https://client.example.com).
                       </p>
                     </div>
 
-                    {mcpServerAuthConfig.type === "bearer" && exportConfig.language === "node" && (
+                    {mcpServerAuthConfig.type === "bearer" && (
                       <div className="border border-primary/30 px-3 py-2 text-[11px] leading-relaxed text-muted-foreground">
                         Set MCP_AUTH_TOKEN in the generated server environment. HTTP/SSE requests must send Authorization: Bearer &lt;token&gt;.
-                      </div>
-                    )}
-
-                    {mcpServerAuthConfig.type === "bearer" && exportConfig.language === "python" && (
-                      <div className="border border-amber-500/30 px-3 py-2 text-[11px] leading-relaxed text-amber-500">
-                        Generated FastMCP code stores MCP_AUTH_TOKEN as a placeholder only. It does not reject unauthenticated requests; enforce bearer auth in a reverse proxy.
+                        Node and Python both enforce this with a constant-time compare.
                       </div>
                     )}
 
@@ -821,7 +843,7 @@ export default function ExportPage() {
                 <div className="space-y-3">
                   <FeatureToggle
                     label="Generate in your browser"
-                    description="Privacy mode: build and zip the project locally. Your spec never leaves your browser."
+                    description="Privacy mode: generate, preview, and zip locally. Your spec never leaves your browser."
                     checked={browserMode}
                     onCheckedChange={setBrowserMode}
                   />
@@ -830,7 +852,7 @@ export default function ExportPage() {
                       <>
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary" />
                         <p>
-                          Generation runs entirely on this device. The spec is never uploaded.
+                          Generation and file preview run entirely on this device. The spec is never uploaded.
                           {exportFeatures.verification && (
                             <> Post-generation verification is server-only, so it is skipped in browser mode.</>
                           )}
@@ -840,8 +862,9 @@ export default function ExportPage() {
                       <>
                         <Cpu className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
                         <p>
-                          Server mode sends the spec to this app&rsquo;s server to build the zip. Required for full
-                          install-and-build verification, which cannot run in the browser.
+                          Server mode sends the spec to this app&rsquo;s server to build the zip or preview.
+                          Process verification only runs when the host enables it; full install-and-build
+                          verification also requires MCPMINT_ALLOW_FULL_VERIFY=1.
                         </p>
                       </>
                     )}
@@ -866,7 +889,7 @@ export default function ExportPage() {
                   <StatusRow
                     icon={<ShieldCheck className="w-4 h-4" />}
                     label="MCP server access"
-                    value={formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport, exportConfig.language)}
+                    value={formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport)}
                     tone={serverConfig.transport === "stdio" ? "muted" : exportConfig.language === "python" ? "warning" : mcpServerAuthConfig.type === "none" ? "warning" : "success"}
                   />
                   <StatusRow
@@ -966,7 +989,8 @@ export default function ExportPage() {
                     <div className="space-y-3">
                     <Terminal className="w-8 h-8 text-muted-foreground/30 mx-auto" />
                     <p className="text-xs text-muted-foreground leading-relaxed">
-                      Click &ldquo;Refresh&rdquo; to generate<br />a live file preview and verification result
+                      Click &ldquo;Refresh&rdquo; to generate<br />
+                      a live file preview{browserMode ? " (in-browser, private)" : ""}
                     </p>
                     </div>
                   </div>
@@ -1086,7 +1110,7 @@ export default function ExportPage() {
               <span className="text-primary/20">·</span>
               <span>{formatAuthConfig(authConfig)}</span>
               <span className="text-primary/20">·</span>
-              <span>{formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport, exportConfig.language)}</span>
+              <span>{formatMcpServerAuthConfig(mcpServerAuthConfig, serverConfig.transport)}</span>
               <span className="text-primary/20">·</span>
               <span>{previewData?.manifest?.generatorVersion ? `v${previewData.manifest.generatorVersion}` : "preview"}</span>
             </div>
