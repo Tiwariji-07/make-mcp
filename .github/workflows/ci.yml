@@ -41,6 +41,9 @@ jobs:
       - name: Parser fixture tests
         run: npm run test:parsers
 
+      - name: API unit tests (SSRF helpers)
+        run: npm run test:api
+
       - name: Build
         run: npm run build
 

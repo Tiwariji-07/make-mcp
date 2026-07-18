@@ -1,3 +1,12 @@
+const MAX_SCHEMA_DEPTH = 24;
+const MAX_SCHEMA_PROPERTIES = 200;
+const MAX_COMPOSITION_MEMBERS = 32;
+
+/**
+ * Convert a JSON Schema fragment into a Zod expression string for generated
+ * Node servers. Recursion is depth- and size-bounded so hostile client JSON
+ * cannot stack-overflow or explode emitted source during generation.
+ */
 export function toZodType(type: string, schema?: Record<string, unknown>): string {
     if (schema) {
         return schemaToZodType(schema);
@@ -15,8 +24,22 @@ export function toZodType(type: string, schema?: Record<string, unknown>): strin
     return map[type.toLowerCase()] || "z.string()";
 }
 
-export function schemaToZodType(schema: Record<string, unknown>): string {
+export function schemaToZodType(
+    schema: Record<string, unknown>,
+    depth = 0,
+    seen?: WeakSet<object>
+): string {
     if (!schema) return "z.unknown()";
+    if (depth > MAX_SCHEMA_DEPTH) return "z.unknown()";
+
+    // Cycle detection across object identity (post-dereference graphs).
+    const visited = seen ?? new WeakSet<object>();
+    if (typeof schema === "object" && schema !== null) {
+        if (visited.has(schema)) {
+            return "z.unknown()";
+        }
+        visited.add(schema);
+    }
 
     const type = schema.type as string;
     const allOf = schema.allOf as Record<string, unknown>[] | undefined;
@@ -24,17 +47,22 @@ export function schemaToZodType(schema: Record<string, unknown>): string {
     const anyOf = schema.anyOf as Record<string, unknown>[] | undefined;
 
     if (Array.isArray(allOf) && allOf.length > 0) {
-        return allOf.map(schemaToZodType).reduce((acc, value) => `${acc}.and(${value})`);
+        const members = allOf.slice(0, MAX_COMPOSITION_MEMBERS);
+        return members
+            .map((member) => schemaToZodType(member, depth + 1, visited))
+            .reduce((acc, value) => `${acc}.and(${value})`);
     }
 
     if (Array.isArray(oneOf) && oneOf.length > 0) {
-        if (oneOf.length === 1) return schemaToZodType(oneOf[0]);
-        return `z.union([${oneOf.map(schemaToZodType).join(", ")}])`;
+        const members = oneOf.slice(0, MAX_COMPOSITION_MEMBERS);
+        if (members.length === 1) return schemaToZodType(members[0], depth + 1, visited);
+        return `z.union([${members.map((member) => schemaToZodType(member, depth + 1, visited)).join(", ")}])`;
     }
 
     if (Array.isArray(anyOf) && anyOf.length > 0) {
-        if (anyOf.length === 1) return schemaToZodType(anyOf[0]);
-        return `z.union([${anyOf.map(schemaToZodType).join(", ")}])`;
+        const members = anyOf.slice(0, MAX_COMPOSITION_MEMBERS);
+        if (members.length === 1) return schemaToZodType(members[0], depth + 1, visited);
+        return `z.union([${members.map((member) => schemaToZodType(member, depth + 1, visited)).join(", ")}])`;
     }
 
     if (schema.enum && Array.isArray(schema.enum) && schema.enum.length > 0) {
@@ -69,7 +97,9 @@ export function schemaToZodType(schema: Record<string, unknown>): string {
 
         case "array": {
             const items = schema.items as Record<string, unknown> | undefined;
-            return items ? `z.array(${schemaToZodType(items)})` : "z.array(z.unknown())";
+            return items
+                ? `z.array(${schemaToZodType(items, depth + 1, visited)})`
+                : "z.array(z.unknown())";
         }
 
         case "object":
@@ -81,9 +111,10 @@ export function schemaToZodType(schema: Record<string, unknown>): string {
                 return "z.record(z.unknown())";
             }
 
-            const fields = Object.entries(properties).map(([key, propertySchema]) => {
+            const entries = Object.entries(properties).slice(0, MAX_SCHEMA_PROPERTIES);
+            const fields = entries.map(([key, propertySchema]) => {
                 const description = propertySchema.description as string | undefined;
-                let value = schemaToZodType(propertySchema);
+                let value = schemaToZodType(propertySchema, depth + 1, visited);
 
                 if (!required.has(key)) {
                     value += ".optional()";

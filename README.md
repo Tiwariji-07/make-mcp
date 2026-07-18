@@ -57,7 +57,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 | [shadcn/ui](https://ui.shadcn.com/) | UI components |
 | [Zustand](https://zustand-demo.pmnd.rs/) | State management |
 | [swagger-parser](https://apitools.dev/swagger-parser/) | OpenAPI specification parsing |
-| [Handlebars](https://handlebarsjs.com/) | Code template generation |
+| [Zod](https://zod.dev/) | Request validation and generated Node parameter schemas |
 | [fflate](https://github.com/101arrowz/fflate) | In-browser, dependency-free zip for client-side generation |
 | [@modelcontextprotocol/sdk](https://github.com/modelcontextprotocol/typescript-sdk) 1.29.0 | MCP SDK used by generated Node.js servers |
 | [FastMCP](https://github.com/jlowin/fastmcp) 3.4.2 | MCP framework used by generated Python servers |
@@ -68,17 +68,23 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 mcpmint/
 ├── src/
 │   ├── app/
-│   │   ├── page.tsx              # Landing page (Hero)
-│   │   ├── import/page.tsx       # Import Collection page
-│   │   ├── editor/page.tsx       # Endpoint selection + sidebar
-│   │   ├── export/page.tsx       # Server configuration
-│   │   └── api/generate/route.ts # Code generation API
+│   │   ├── page.tsx                 # Landing page
+│   │   ├── import/page.tsx          # Import collection
+│   │   ├── editor/page.tsx          # Endpoint selection
+│   │   ├── export/page.tsx          # Server config + generate
+│   │   └── api/
+│   │       ├── generate/route.ts    # Server-side generate/preview
+│   │       ├── fetch-spec/route.ts  # SSRF-hardened URL fetch proxy
+│   │       └── health/route.ts      # Liveness probe
 │   ├── components/
-│   │   ├── shared/               # Header, common components
-│   │   └── ui/                   # shadcn/ui components
-│   ├── lib/parsers/              # OpenAPI parser
-│   └── store/                    # Zustand store
-├── public/
+│   ├── lib/
+│   │   ├── api/                     # Request guards + SSRF helpers
+│   │   ├── client-generate.ts       # Browser-side generate + preview
+│   │   ├── generator/               # Planner, targets, verify
+│   │   └── parsers/                 # OpenAPI + Postman
+│   └── store/                       # Zustand session store
+├── cli/                             # npm package (mcpmint CLI)
+├── pypi/                            # PyPI wrapper
 └── package.json
 ```
 
@@ -109,9 +115,27 @@ npm run build
 # Start production server
 npm start
 
-# Type check
-npx tsc --noEmit
+# Type check / lint / tests
+npm run typecheck
+npm run lint
+npm run test:generator
 ```
+
+## 🚀 Production configuration
+
+Copy [`.env.example`](./.env.example) and set values in your host (e.g. Vercel):
+
+| Variable | Purpose | Public deploy |
+|----------|---------|---------------|
+| `NEXT_PUBLIC_SITE_URL` | Canonical site URL for SEO/metadata | Set to your domain |
+| `MCPMINT_ALLOW_PROCESS_VERIFY` | Allow process-spawning verify on `/api/generate` | **Leave unset** |
+| `MCPMINT_ALLOW_FULL_VERIFY` | Allow `verificationMode: full` | **Leave unset** |
+| `UPSTASH_REDIS_REST_URL` / `TOKEN` | Shared rate limits across isolates | Recommended |
+| `MCPMINT_RATE_LIMIT_MAX` | Requests per IP per minute (default 20) | Optional |
+
+Health check: `GET /api/health`.
+
+Default product path generates **and previews in the browser** so specs do not hit the server. Server-side generation remains available when privacy mode is off.
 
 ## 🧭 Architecture
 

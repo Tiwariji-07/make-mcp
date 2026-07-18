@@ -441,7 +441,9 @@ const initialState = {
             documentation: true,
             docker: false,
             tests: true,
-            verification: true,
+            // Off by default: process-spawning verify is a server DoS risk and
+            // is stripped on the public API unless MCPMINT_ALLOW_PROCESS_VERIFY=1.
+            verification: false,
         },
     },
     savedProjects: [] as SavedProject[],

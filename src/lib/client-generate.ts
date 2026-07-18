@@ -56,17 +56,21 @@ export interface ClientGenerationResult {
   validation: ValidationResult;
 }
 
+export interface ClientPreviewResult {
+  files: Array<{ name: string; content: string }>;
+  manifest: GeneratedProject["manifest"];
+  validation: ValidationResult;
+}
+
 /**
- * Generate the MCP server project entirely in the browser and return a
- * downloadable zip Blob. Takes the SAME payload shape the server route accepts
- * (validated via the shared Zod schema). No Node APIs, no network calls — the
- * spec never leaves the browser.
- *
- * Note: post-generation verification (verify.ts) is intentionally NOT run here
- * — it shells out to tsc / npm / python and cannot run in the browser. Full
- * verification remains a server-only capability.
+ * Build the generated project in-memory (no zip). Shared by download + preview
+ * so both privacy paths stay fully client-side.
  */
-export function generateProjectInBrowser(payload: unknown): ClientGenerationResult {
+function buildProjectInBrowser(payload: unknown): {
+  request: GeneratorRequest;
+  project: GeneratedProject;
+  validation: ValidationResult;
+} {
   // Validate + normalize the payload with the same schema the server uses, so
   // browser and server produce identical output for identical input.
   const request: GeneratorRequest = parseGeneratorRequestPayload(payload);
@@ -78,6 +82,21 @@ export function generateProjectInBrowser(payload: unknown): ClientGenerationResu
   }
 
   const project = generateProject(plan);
+  return { request, project, validation };
+}
+
+/**
+ * Generate the MCP server project entirely in the browser and return a
+ * downloadable zip Blob. Takes the SAME payload shape the server route accepts
+ * (validated via the shared Zod schema). No Node APIs, no network calls — the
+ * spec never leaves the browser.
+ *
+ * Note: post-generation verification (verify.ts) is intentionally NOT run here
+ * — it shells out to tsc / npm / python and cannot run in the browser. Full
+ * verification remains a server-only capability.
+ */
+export function generateProjectInBrowser(payload: unknown): ClientGenerationResult {
+  const { request, project, validation } = buildProjectInBrowser(payload);
 
   const rootFolder = sanitizeRootFolder(request.serverConfig.name);
 
@@ -99,6 +118,21 @@ export function generateProjectInBrowser(payload: unknown): ClientGenerationResu
     blob,
     filename: `${rootFolder}.zip`,
     project,
+    validation,
+  };
+}
+
+/**
+ * Preview generated files entirely in the browser (same pure pipeline as
+ * generateProjectInBrowser, without zip). Used when privacy mode is on so the
+ * full apiModel never uploads for a file preview.
+ */
+export function previewProjectInBrowser(payload: unknown): ClientPreviewResult {
+  const { project, validation } = buildProjectInBrowser(payload);
+
+  return {
+    files: Array.from(project.files.entries()).map(([name, content]) => ({ name, content })),
+    manifest: project.manifest,
     validation,
   };
 }
