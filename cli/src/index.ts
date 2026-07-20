@@ -135,7 +135,7 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
 
     let result;
     try {
-        result = generateToDisk(request, outDir, verify);
+        result = generateToDisk(request, outDir, verify, Boolean(values.force));
     } catch (error) {
         fail(error instanceof Error ? error.message : "generation failed");
     }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Download,
@@ -16,7 +16,6 @@ import {
   Cpu,
   FileText,
   ShieldCheck,
-  XCircle,
   PartyPopper,
   Github,
   Lock,
@@ -41,16 +40,15 @@ import { CopyButton } from "@/components/ui/copy-button";
 import { AuthConfig, ExportConfig, McpServerAuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
 import { buildToolPlans } from "@/lib/generator/planner";
 import { generateProjectInBrowser, previewProjectInBrowser } from "@/lib/client-generate";
+import {
+  joinProjectPath,
+  renderClaudeCodeCommand,
+  renderMcpClientConfig,
+} from "@/lib/generator/client-config";
 
 interface PreviewFile {
   name: string;
   content: string;
-}
-
-interface PreviewCheck {
-  name: string;
-  status: "passed" | "failed" | "skipped";
-  details?: string;
 }
 
 interface PreviewData {
@@ -73,11 +71,6 @@ interface PreviewData {
     errors: PreviewIssue[];
     warnings: PreviewIssue[];
     info: PreviewIssue[];
-  };
-  verification?: {
-    status: "passed" | "failed";
-    mode: "fast" | "full";
-    checks: PreviewCheck[];
   };
 }
 
@@ -246,11 +239,11 @@ function getSnapshotTransportUrl(snapshot: GeneratedSnapshot): string {
 
 // Mirrors targets/node.ts + targets/python.ts renderReadme(): the stdio client
 // command/args the generator ships in the README's Example MCP Client Config.
-function getSnapshotStdioClient(snapshot: GeneratedSnapshot): { command: string; args: string[] } {
+function getSnapshotStdioClient(snapshot: GeneratedSnapshot, projectDirectory: string): { command: string; args: string[] } {
   if (snapshot.language === "python") {
-    return { command: "python", args: ["src/server.py"] };
+    return { command: "python", args: [joinProjectPath(projectDirectory, "src/server.py")] };
   }
-  return { command: "node", args: ["dist/src/index.js"] };
+  return { command: "node", args: [joinProjectPath(projectDirectory, "dist/src/index.js")] };
 }
 
 // Mirrors readme.ts getClientConfigEnv() for the single upstream-auth scheme the
@@ -276,53 +269,47 @@ function getSnapshotClientEnv(snapshot: GeneratedSnapshot): Record<string, strin
 
 // Mirrors readme.ts renderClientConfig(): the mcpServers JSON block that ships in
 // the generated README. stdio uses command/args/env; HTTP/SSE uses a url.
-function buildMcpServersConfig(snapshot: GeneratedSnapshot): string {
-  const serverKey = snapshot.serverName;
-
+function buildMcpServersConfig(snapshot: GeneratedSnapshot, projectDirectory: string): string {
   if (snapshot.transport === "stdio") {
-    const { command, args } = getSnapshotStdioClient(snapshot);
-    return JSON.stringify(
-      {
-        mcpServers: {
-          [serverKey]: {
-            command,
-            args,
-            env: getSnapshotClientEnv(snapshot),
-          },
-        },
-      },
-      null,
-      2,
-    );
+    const { command, args } = getSnapshotStdioClient(snapshot, projectDirectory);
+    return renderMcpClientConfig({
+      serverName: snapshot.serverName,
+      transport: "stdio",
+      stdioCommand: command,
+      stdioArgs: args,
+      env: getSnapshotClientEnv(snapshot),
+    });
   }
 
-  return JSON.stringify(
-    {
-      mcpServers: {
-        [serverKey]: {
-          url: getSnapshotTransportUrl(snapshot),
-        },
-      },
-    },
-    null,
-    2,
-  );
+  return renderMcpClientConfig({
+    serverName: snapshot.serverName,
+    transport: snapshot.transport,
+    transportUrl: getSnapshotTransportUrl(snapshot),
+  });
 }
 
 // Cursor's mcp.json uses the same mcpServers shape as Claude Desktop.
-function buildCursorConfig(snapshot: GeneratedSnapshot): string {
-  return buildMcpServersConfig(snapshot);
+function buildCursorConfig(snapshot: GeneratedSnapshot, projectDirectory: string): string {
+  return buildMcpServersConfig(snapshot, projectDirectory);
 }
 
 // `claude mcp add` CLI form. For stdio the server entry is `-- <command> <args>`;
 // for HTTP/SSE it is `--transport <t> <url>`.
-function buildClaudeCliCommand(snapshot: GeneratedSnapshot): string {
+function buildClaudeCliCommand(snapshot: GeneratedSnapshot, projectDirectory: string): string {
   if (snapshot.transport === "stdio") {
-    const { command, args } = getSnapshotStdioClient(snapshot);
-    return `claude mcp add ${snapshot.serverName} -- ${command} ${args.join(" ")}`;
+    const { command, args } = getSnapshotStdioClient(snapshot, projectDirectory);
+    return renderClaudeCodeCommand({
+      serverName: snapshot.serverName,
+      transport: "stdio",
+      stdioCommand: command,
+      stdioArgs: args,
+    });
   }
-  const transportFlag = snapshot.transport === "sse" ? "sse" : "http";
-  return `claude mcp add --transport ${transportFlag} ${snapshot.serverName} ${getSnapshotTransportUrl(snapshot)}`;
+  return renderClaudeCodeCommand({
+    serverName: snapshot.serverName,
+    transport: snapshot.transport,
+    transportUrl: getSnapshotTransportUrl(snapshot),
+  });
 }
 
 function getInstallCommand(snapshot: GeneratedSnapshot): string {
@@ -354,14 +341,16 @@ export default function ExportPage() {
 
   const [isGenerating, setIsGenerating] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
-  const [previewFiles, setPreviewFiles] = useState<PreviewFile[]>([]);
-  const [previewData, setPreviewData] = useState<PreviewData | null>(null);
+  const [previewResult, setPreviewResult] = useState<{
+    signature: string;
+    data: PreviewData;
+  } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [portValue, setPortValue] = useState(serverConfig.port.toString());
   const [generated, setGenerated] = useState<GeneratedSnapshot | null>(null);
   // Privacy mode: generate entirely in the browser so the spec never leaves the
-  // machine. Default ON. Switching off uses the server route, which is required
-  // for full install/build verification (impossible in-browser).
+  // machine. Default ON. Switching off uses the server route for generation,
+  // but process-spawning verification remains a local CLI-only operation.
   const [browserMode, setBrowserMode] = useState(true);
 
   useEffect(() => {
@@ -403,8 +392,15 @@ export default function ExportPage() {
     serverConfig,
     authConfig,
     mcpServerAuthConfig,
-    exportConfig,
+    exportConfig: {
+      ...exportConfig,
+      verificationMode: "fast" as const,
+      features: { ...exportConfig.features, verification: false },
+    },
   };
+  const generatorSignature = JSON.stringify(generatorPayload);
+  const previewData = previewResult?.signature === generatorSignature ? previewResult.data : null;
+  const previewFiles = previewData?.files || [];
   const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
   const detectedAuth = getDetectedAuthOptions(spec);
   const detectedApiKey = detectedAuth.find((o) => o.type === "apiKey");
@@ -432,7 +428,6 @@ export default function ExportPage() {
     ...(isHttpTransport && isWildcardHost && mcpServerAuthConfig.type === "none" ? ["Host is 0.0.0.0 and MCP server access auth is none. This can expose the MCP server to the network."] : []),
     ...(duplicateToolNames.length > 0 ? [`Duplicate tool names will be renamed during generation: ${[...new Set(duplicateToolNames)].join(", ")}.`] : []),
     ...(manualReviewEndpoints.length > 0 ? [`${manualReviewEndpoints.length} selected endpoint${manualReviewEndpoints.length === 1 ? "" : "s"} need manual review.`] : []),
-    ...(!exportFeatures.verification ? ["Post-generation verification is disabled (default). Enable only when using server-side generation on a host that allows process verify."] : []),
     ...(spec.baseUrl ? [] : ["No base URL was detected; generated code will use the configured fallback."]),
   ];
   const previewWarnings = [
@@ -487,9 +482,9 @@ export default function ExportPage() {
     try {
       if (browserMode) {
         // Privacy mode: run the pure generator + zip entirely in the browser.
-        // The spec never touches the network. Verification is server-only, so
-        // it is not run here (matches the note shown in the UI).
-        const { blob, filename } = generateProjectInBrowser(generatorPayload);
+        // The spec never touches the network. Process verification is a local
+        // CLI-only operation, so it is not run by either web generation path.
+        const { blob, filename } = await generateProjectInBrowser(generatorPayload);
         triggerDownload(blob, filename);
       } else {
         const res = await fetch("/api/generate", {
@@ -501,7 +496,9 @@ export default function ExportPage() {
         const blob = await res.blob();
         triggerDownload(blob, `${serverConfig.name}.zip`);
       }
-      saveCurrentProject();
+      if (!saveCurrentProject()) {
+        setError("The download succeeded, but this project could not be saved to browser history.");
+      }
       setGenerated({
         serverName: serverConfig.name,
         language: exportConfig.language,
@@ -538,20 +535,22 @@ export default function ExportPage() {
       if (browserMode) {
         // Privacy mode: preview entirely in-browser so the apiModel never uploads.
         const data = previewProjectInBrowser(generatorPayload);
-        setPreviewFiles(data.files || []);
-        setPreviewData({
-          files: data.files,
-          manifest: data.manifest
-            ? {
-                generatorVersion: data.manifest.generatorVersion,
-                language: data.manifest.language,
-                framework: data.manifest.framework,
-                transport: data.manifest.transport,
-                toolCount: data.manifest.toolCount,
-                features: { ...data.manifest.features },
-              }
-            : undefined,
-          validation: data.validation,
+        setPreviewResult({
+          signature: generatorSignature,
+          data: {
+            files: data.files,
+            manifest: data.manifest
+              ? {
+                  generatorVersion: data.manifest.generatorVersion,
+                  language: data.manifest.language,
+                  framework: data.manifest.framework,
+                  transport: data.manifest.transport,
+                  toolCount: data.manifest.toolCount,
+                  features: { ...data.manifest.features },
+                }
+              : undefined,
+            validation: data.validation,
+          },
         });
       } else {
         const res = await fetch("/api/generate?preview=true", {
@@ -560,9 +559,8 @@ export default function ExportPage() {
           body: JSON.stringify(generatorPayload),
         });
         if (!res.ok) { const d = await res.json(); throw new Error(d.error || "Failed"); }
-        const data = await res.json();
-        setPreviewFiles(data.files || []);
-        setPreviewData(data);
+        const data = await res.json() as PreviewData;
+        setPreviewResult({ signature: generatorSignature, data });
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Preview failed");
@@ -598,7 +596,7 @@ export default function ExportPage() {
 
           {/* ─── Left: Configuration ─── */}
           <div className="flex-1 overflow-y-auto border-r border-border">
-            <div className="max-w-2xl mx-auto px-8 py-10 space-y-0">
+            <div className="max-w-2xl mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-0">
 
               {/* Language Selection */}
               <Section title="Language">
@@ -645,13 +643,15 @@ export default function ExportPage() {
 
               {/* Server Details */}
               <Section title="Server">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Field label="Name" value={serverConfig.name} onChange={(v) => setServerConfig({ name: v })} />
                   <Field label="Version" value={serverConfig.version} onChange={(v) => setServerConfig({ version: v })} />
                   <Field label="Host" value={serverConfig.host} onChange={(v) => setServerConfig({ host: v })} />
                   <div className="space-y-1.5">
-                    <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Port</Label>
+                    <Label htmlFor="server-port" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Port</Label>
                     <Input
+                      id="server-port"
+                      inputMode="numeric"
                       value={portValue}
                       onChange={(e) => setPortValue(e.target.value)}
                       className="h-8 bg-background border-border text-xs focus:border-primary"
@@ -659,14 +659,14 @@ export default function ExportPage() {
                   </div>
                 </div>
                 <div className="mt-4">
-                  <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase mb-2 block">
+                  <Label htmlFor="server-transport" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase mb-2 block">
                     Transport
                   </Label>
                   <Select
                     value={serverConfig.transport}
                     onValueChange={(v) => setServerConfig({ transport: v as Transport })}
                   >
-                    <SelectTrigger className="h-8 bg-background border-border text-xs">
+                    <SelectTrigger id="server-transport" className="h-9 bg-background border-border text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -704,36 +704,14 @@ export default function ExportPage() {
                     checked={exportFeatures.tests}
                     onCheckedChange={(checked) => setExportConfig({ features: { tests: checked } })}
                   />
-                  <FeatureToggle
-                    label="Verification"
-                    description="Server-side process checks (tsc/install). Off by default; requires server mode and host opt-in."
-                    checked={exportFeatures.verification}
-                    onCheckedChange={(checked) => setExportConfig({ features: { verification: checked } })}
-                  />
-                  {exportFeatures.verification && (
-                    <div className="space-y-1.5 pl-10">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Verification Mode</Label>
-                      <Select
-                        value={exportConfig.verificationMode || "fast"}
-                        onValueChange={(value) => setExportConfig({ verificationMode: value as "fast" | "full" })}
-                      >
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="fast">Fast checks</SelectItem>
-                          <SelectItem value="full">Full install and build</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
                 </div>
               </Section>
 
               {/* Upstream API Authentication */}
               <Section title="Upstream API Auth">
+                <Label htmlFor="upstream-auth-type" className="sr-only">Upstream authentication type</Label>
                 <Select value={authConfig.type} onValueChange={(v) => handleAuthTypeChange(v as AuthType)}>
-                  <SelectTrigger className="h-8 bg-background border-border text-xs">
+                  <SelectTrigger id="upstream-auth-type" className="h-9 bg-background border-border text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -752,12 +730,12 @@ export default function ExportPage() {
                       onChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: v, in: authConfig.apiKey?.in || "header" } })}
                     />
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Location</Label>
+                      <Label htmlFor="api-key-location" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Location</Label>
                       <Select
                         value={authConfig.apiKey?.in || "header"}
                         onValueChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: authConfig.apiKey?.name || "X-API-Key", in: v as "header" | "query" | "cookie" } })}
                       >
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                        <SelectTrigger id="api-key-location" className="h-9 bg-background border-border text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -790,9 +768,9 @@ export default function ExportPage() {
                 ) : (
                   <div className="space-y-4">
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Server Auth</Label>
+                      <Label htmlFor="mcp-server-auth" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Server Auth</Label>
                       <Select value={mcpServerAuthConfig.type} onValueChange={(v) => handleMcpServerAuthTypeChange(v as McpServerAuthType)}>
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                        <SelectTrigger id="mcp-server-auth" className="h-9 bg-background border-border text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -803,8 +781,9 @@ export default function ExportPage() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Allowed Origins</Label>
+                      <Label htmlFor="allowed-origins" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Allowed Origins</Label>
                       <Input
+                        id="allowed-origins"
                         value={mcpServerAuthConfig.allowedOrigins.join(", ")}
                         onChange={(event) => handleAllowedOriginsChange(event.target.value)}
                         placeholder="https://client.example.com, http://localhost:3000"
@@ -853,9 +832,6 @@ export default function ExportPage() {
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary" />
                         <p>
                           Generation and file preview run entirely on this device. The spec is never uploaded.
-                          {exportFeatures.verification && (
-                            <> Post-generation verification is server-only, so it is skipped in browser mode.</>
-                          )}
                         </p>
                       </>
                     ) : (
@@ -863,8 +839,8 @@ export default function ExportPage() {
                         <Cpu className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
                         <p>
                           Server mode sends the spec to this app&rsquo;s server to build the zip or preview.
-                          Process verification only runs when the host enables it; full install-and-build
-                          verification also requires MCPMINT_ALLOW_FULL_VERIFY=1.
+                          The public server validates structure but never installs dependencies or starts
+                          generated processes.
                         </p>
                       </>
                     )}
@@ -899,16 +875,10 @@ export default function ExportPage() {
                     tone="success"
                   />
                   <StatusRow
-                    icon={previewData?.verification?.status === "failed" ? <XCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-                    label="Verification result"
-                    value={
-                      previewData?.verification
-                        ? `${previewData.verification.status} · ${previewData.verification.mode}`
-                        : exportFeatures.verification
-                          ? "Not run yet"
-                          : "Disabled"
-                    }
-                    tone={previewData?.verification?.status === "failed" ? "danger" : previewData?.verification ? "success" : "muted"}
+                    icon={<CheckCircle2 className="w-4 h-4" />}
+                    label="Generation checks"
+                    value="Structure validated · full verification via CLI"
+                    tone="muted"
                   />
                 </div>
 
@@ -1016,29 +986,6 @@ export default function ExportPage() {
                           </Badge>
                         ))}
                       </div>
-                      {previewData.verification && (
-                        <div className="space-y-2">
-                          <div className={previewData.verification.status === "passed" ? "text-primary" : "text-red"}>
-                            Verification ({previewData.verification.mode}): {previewData.verification.status}
-                          </div>
-                          <div className="space-y-1">
-                            {previewData.verification.checks.map((check) => (
-                              <div key={check.name} className="flex items-center justify-between gap-4">
-                                <span>{check.name}</span>
-                                <span className={
-                                  check.status === "passed"
-                                    ? "text-primary"
-                                    : check.status === "failed"
-                                      ? "text-red"
-                                      : "text-muted-foreground"
-                                }>
-                                  {check.status}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       {previewWarnings.length > 0 && (
                         <div className="space-y-1">
                           <div className="text-amber-500">Warnings</div>
@@ -1206,10 +1153,12 @@ function Field({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const id = useId();
   return (
     <div className="space-y-1.5">
-      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">{label}</Label>
+      <Label htmlFor={id} className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">{label}</Label>
       <Input
+        id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="h-8 bg-background border-border text-xs focus:border-primary"
@@ -1233,6 +1182,8 @@ function LangCard({
 }) {
   return (
     <button
+      type="button"
+      aria-pressed={selected}
       onClick={onClick}
       className={`
         p-5 border-2 text-left transition-all relative
@@ -1274,13 +1225,15 @@ function FeatureToggle({
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
+  const id = useId();
+  const descriptionId = `${id}-description`;
   return (
     <div className="flex items-center justify-between gap-4 border border-border px-4 py-3">
       <div className="space-y-1">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-[11px] text-muted-foreground">{description}</p>
+        <Label htmlFor={id} className="text-sm font-medium">{label}</Label>
+        <p id={descriptionId} className="text-[11px] text-muted-foreground">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch id={id} aria-describedby={descriptionId} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
 }
@@ -1450,11 +1403,12 @@ function SuccessView({
   error: string | null;
 }) {
   const isStdio = snapshot.transport === "stdio";
+  const [projectDirectory, setProjectDirectory] = useState(`/absolute/path/to/${snapshot.serverName}`);
   const install = getInstallCommand(snapshot);
   const run = getRunCommand(snapshot);
-  const claudeDesktopConfig = buildMcpServersConfig(snapshot);
-  const cursorConfig = buildCursorConfig(snapshot);
-  const claudeCli = buildClaudeCliCommand(snapshot);
+  const claudeDesktopConfig = buildMcpServersConfig(snapshot, projectDirectory);
+  const cursorConfig = buildCursorConfig(snapshot, projectDirectory);
+  const claudeCli = buildClaudeCliCommand(snapshot, projectDirectory);
   const transportUrl = getSnapshotTransportUrl(snapshot);
 
   return (
@@ -1507,9 +1461,29 @@ function SuccessView({
           </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
             {isStdio
-              ? "Client config formats vary, but the shape is the same one shipped in the generated README. Fill the env values from your .env before connecting."
+              ? "Local clients need an absolute entrypoint path. Enter the folder where you extracted the project, then fill the env values before copying a config."
               : "Client config formats vary, but the shape matches the generated README. Start the server first, then point your client at its URL. Configure .env on the machine where the server runs."}
           </p>
+
+          {isStdio && (
+            <div className="space-y-1.5">
+              <Label htmlFor="generated-project-directory" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                Extracted project folder
+              </Label>
+              <Input
+                id="generated-project-directory"
+                value={projectDirectory}
+                onChange={(event) => setProjectDirectory(event.target.value)}
+                placeholder={`/absolute/path/to/${snapshot.serverName}`}
+                className="h-9 bg-background border-border text-xs focus:border-primary"
+              />
+              {projectDirectory.startsWith("/absolute/path/to/") && (
+                <p className="text-[11px] text-amber-500">
+                  Replace the placeholder with the absolute path on your machine before using this config.
+                </p>
+              )}
+            </div>
+          )}
 
           <ConfigSnippet
             title="Claude Desktop"
@@ -1565,7 +1539,7 @@ function SuccessView({
             </StepItem>
             <StepItem index={4} title={isStdio ? "Add to your client" : "Start the server, then add it to your client"}>
               {isStdio ? (
-                <>Use the client config above. Local clients launch the server with <InlineCode>{getSnapshotStdioClient(snapshot).command}</InlineCode> over stdio.</>
+                <>Use the client config above. Local clients launch the server with <InlineCode>{getSnapshotStdioClient(snapshot, projectDirectory).command}</InlineCode> over stdio using the absolute entrypoint path you provided.</>
               ) : (
                 <>Run <InlineCode>{run}</InlineCode> to start the server, then point your client at <InlineCode>{transportUrl}</InlineCode> using the config above.</>
               )}

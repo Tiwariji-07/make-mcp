@@ -1,15 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { ZodError } from "zod";
-import {
-    createArchivedProject,
-    createPreviewResponse,
-} from "@/lib/generator";
+import { createServerArchive, createServerPreview } from "@/lib/generator/server";
 import { parseGeneratorRequestPayload } from "@/lib/generator/request";
 import type { GeneratorRequest } from "@/lib/generator/types";
 import {
     checkRateLimit,
-    isFullVerifyAllowed,
-    isProcessVerificationAllowed,
     PayloadTooLargeError,
     readJsonBodyCapped,
 } from "@/lib/api/request-guards";
@@ -31,22 +26,11 @@ function sanitizeFilename(name: string): string {
 }
 
 /**
- * On the public server path, never spawn tsc/npm/pip unless the operator has
- * explicitly opted in. Clients may still request verification; we strip it
- * server-side so it cannot be used as a free DoS.
+ * The HTTP generation path never spawns tsc/npm/pip. Full process verification
+ * is intentionally CLI-only so an untrusted request cannot consume arbitrary
+ * install/build resources on the server.
  */
 function applyPublicVerificationPolicy(body: GeneratorRequest): GeneratorRequest {
-    const wantsFull = body.exportConfig.verificationMode === "full";
-    if (wantsFull && !isFullVerifyAllowed()) {
-        // Caller will reject with 400 before generation when full is requested
-        // but disabled — keep mode intact so the check can fire.
-        return body;
-    }
-
-    if (isProcessVerificationAllowed()) {
-        return body;
-    }
-
     return {
         ...body,
         exportConfig: {
@@ -100,23 +84,16 @@ export async function POST(request: NextRequest) {
         );
     }
 
-    if (body.exportConfig.verificationMode === "full" && !isFullVerifyAllowed()) {
-        return NextResponse.json(
-            { error: "Full verification is not enabled on this server." },
-            { status: 400 }
-        );
-    }
-
     body = applyPublicVerificationPolicy(body);
 
     try {
         const isPreview = request.nextUrl.searchParams.get("preview") === "true";
 
         if (isPreview) {
-            return NextResponse.json(createPreviewResponse(body));
+            return NextResponse.json(createServerPreview(body));
         }
 
-        const { archive } = await createArchivedProject(body);
+        const { archive } = await createServerArchive(body);
 
         return new NextResponse(new Uint8Array(archive), {
             headers: {

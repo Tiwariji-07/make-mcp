@@ -5,8 +5,16 @@
 // path takes. Post-generation verification IS available here (unlike the
 // browser), since the CLI can shell out to tsc / npm / python locally.
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+    existsSync,
+    mkdirSync,
+    mkdtempSync,
+    readdirSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
+import { basename, dirname, join } from "node:path";
 import type { GeneratorRequest, VerificationReport } from "../../src/lib/generator/types.ts";
 import { buildGenerationPlan } from "../../src/lib/generator/normalize.ts";
 import { validateGenerationPlan } from "../../src/lib/generator/validate.ts";
@@ -20,10 +28,49 @@ export interface GenerateResult {
     verification?: VerificationReport;
 }
 
+export function writeProjectAtomically(
+    files: ReadonlyMap<string, string>,
+    outDir: string,
+    replaceExisting: boolean,
+): void {
+    const parentDirectory = dirname(outDir);
+    mkdirSync(parentDirectory, { recursive: true });
+
+    if (existsSync(outDir) && readdirSync(outDir).length > 0 && !replaceExisting) {
+        throw new Error(`output directory "${outDir}" is not empty`);
+    }
+
+    const stagingDirectory = mkdtempSync(join(parentDirectory, `.${basename(outDir)}-mcpmint-`));
+    const backupDirectory = `${stagingDirectory}.previous`;
+    let movedExisting = false;
+
+    try {
+        for (const [filePath, content] of files) {
+            const target = join(stagingDirectory, filePath);
+            mkdirSync(dirname(target), { recursive: true });
+            writeFileSync(target, content);
+        }
+
+        if (existsSync(outDir)) {
+            renameSync(outDir, backupDirectory);
+            movedExisting = true;
+        }
+        renameSync(stagingDirectory, outDir);
+        if (movedExisting) rmSync(backupDirectory, { recursive: true, force: true });
+    } catch (error) {
+        rmSync(stagingDirectory, { recursive: true, force: true });
+        if (movedExisting && !existsSync(outDir) && existsSync(backupDirectory)) {
+            renameSync(backupDirectory, outDir);
+        }
+        throw error;
+    }
+}
+
 export function generateToDisk(
     request: GeneratorRequest,
     outDir: string,
     verify: "off" | "fast" | "full",
+    replaceExisting = false,
 ): GenerateResult {
     const plan = buildGenerationPlan(request);
 
@@ -35,16 +82,12 @@ export function generateToDisk(
     const project =
         plan.runtime.language === "node" ? generateNodeProject(plan) : generatePythonProject(plan);
 
-    for (const [filePath, content] of project.files) {
-        const target = join(outDir, filePath);
-        mkdirSync(dirname(target), { recursive: true });
-        writeFileSync(target, content);
-    }
-
     let verification: VerificationReport | undefined;
     if (verify !== "off") {
         verification = verifyGeneratedProject(project, verify);
     }
+
+    writeProjectAtomically(project.files, outDir, replaceExisting);
 
     return {
         fileCount: project.files.size,

@@ -49,7 +49,7 @@ export function Header() {
 
   return (
     <header className="fixed top-0 left-0 right-0 z-50 bg-background/95">
-      <div className="max-w-[1400px] mx-auto px-6 h-14 flex items-center justify-between">
+      <div className="max-w-[1400px] mx-auto px-3 sm:px-6 h-14 flex items-center justify-between gap-3">
         {/* Logo */}
         <Link
           href="/"
@@ -98,11 +98,12 @@ export function Header() {
 
         {/* Progress Bar — only when spec loaded */}
         {spec && (
-          <div className="flex items-center gap-4">
+          <div className="hidden md:flex items-center gap-4" aria-label={`Step ${stepIndex + 1} of ${STEPS.length}: ${STEPS[stepIndex]?.label}`}>
             <div className="flex items-center gap-6">
               {STEPS.map((step, i) => (
                 <span
                   key={step.key}
+                  aria-current={i === stepIndex ? "step" : undefined}
                   className={`text-[11px] tracking-[0.15em] uppercase transition-colors ${
                     i <= stepIndex
                       ? "text-primary"
@@ -113,7 +114,14 @@ export function Header() {
                 </span>
               ))}
             </div>
-            <div className="w-24 h-[2px] bg-border overflow-hidden">
+            <div
+              role="progressbar"
+              aria-label="Project setup progress"
+              aria-valuemin={0}
+              aria-valuemax={100}
+              aria-valuenow={Math.round(progress)}
+              className="w-24 h-[2px] bg-border overflow-hidden"
+            >
               <div
                 className="h-full bg-primary transition-all duration-500 ease-out"
                 style={{ width: `${progress}%` }}
@@ -130,16 +138,19 @@ export function Header() {
               href="https://github.com/mcpmint/mcpmint"
               target="_blank"
               rel="noopener noreferrer"
+              aria-label="Open mcpmint on GitHub"
               className="text-muted-foreground hover:text-primary transition-colors"
             >
-              <Github className="w-4 h-4" />
+              <Github aria-hidden="true" className="w-4 h-4" />
             </a>
           </Button>
         </div>
       </div>
 
       {/* Bottom line */}
-      <div className="h-px bg-border" />
+      <div className="h-px bg-border" aria-hidden="true">
+        {spec && <div className="h-full bg-primary md:hidden" style={{ width: `${progress}%` }} />}
+      </div>
     </header>
   );
 }

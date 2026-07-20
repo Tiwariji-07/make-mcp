@@ -44,6 +44,15 @@ jobs:
       - name: API unit tests (SSRF helpers)
         run: npm run test:api
 
+      - name: Workflow, accessibility, and trust tests
+        run: npm run test:workflow
+
+      - name: CLI behavior tests
+        run: npm run test:cli
+
+      - name: Dependency audit
+        run: npm run audit:dependencies
+
       - name: Build
         run: npm run build
 
@@ -68,6 +77,10 @@ jobs:
 
       - name: Build CLI bundle
         run: npm run build
+        working-directory: cli
+
+      - name: Audit CLI dependencies
+        run: npm audit --audit-level=low
         working-directory: cli
 
   generated-projects:

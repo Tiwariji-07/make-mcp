@@ -1,4 +1,4 @@
-import Archiver from "archiver";
+import { ZipArchive } from "archiver";
 import type { GeneratedProject } from "./types.ts";
 
 // Defense-in-depth against Zip Slip / traversal (finding M1/R7). The caller
@@ -24,7 +24,7 @@ export async function archiveGeneratedProject(
 ): Promise<Buffer> {
     const safeRootFolder = sanitizeRootFolder(rootFolder);
     const chunks: Uint8Array[] = [];
-    const archive = Archiver("zip", { zlib: { level: 9 } });
+    const archive = new ZipArchive({ zlib: { level: 9 } });
 
     archive.on("data", (chunk) => chunks.push(chunk));
 

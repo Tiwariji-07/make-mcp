@@ -13,10 +13,11 @@
 //   - validateGenerationPlan (validate.ts)  -> validation
 //   - generateNodeProject / generatePythonProject (targets/*) -> file map
 //   - parseGeneratorRequestPayload (request.ts, Zod) -> input validation
-// It then zips the in-memory file map with fflate (zipSync + strToU8), which is
-// a tiny pure-JS zip implementation with no Node dependencies.
+// It then zips the in-memory file map with fflate (zip + strToU8), which is a
+// tiny pure-JS zip implementation with no Node dependencies. The asynchronous
+// API uses workers in browsers, keeping compression off the UI thread.
 
-import { zipSync, strToU8 } from "fflate";
+import { zip, strToU8 } from "fflate";
 import { buildGenerationPlan } from "@/lib/generator/normalize";
 import { validateGenerationPlan } from "@/lib/generator/validate";
 import { parseGeneratorRequestPayload } from "@/lib/generator/request";
@@ -93,14 +94,14 @@ function buildProjectInBrowser(payload: unknown): {
  *
  * Note: post-generation verification (verify.ts) is intentionally NOT run here
  * — it shells out to tsc / npm / python and cannot run in the browser. Full
- * verification remains a server-only capability.
+ * verification remains a local CLI capability.
  */
-export function generateProjectInBrowser(payload: unknown): ClientGenerationResult {
+export async function generateProjectInBrowser(payload: unknown): Promise<ClientGenerationResult> {
   const { request, project, validation } = buildProjectInBrowser(payload);
 
   const rootFolder = sanitizeRootFolder(request.serverConfig.name);
 
-  // fflate zipSync takes a nested/flat map of path -> Uint8Array. We prefix
+  // fflate zip takes a nested/flat map of path -> Uint8Array. We prefix
   // every file with the sanitized root folder to match the server archive
   // layout (rootFolder/<file>).
   const zipInput: Record<string, Uint8Array> = {};
@@ -108,7 +109,12 @@ export function generateProjectInBrowser(payload: unknown): ClientGenerationResu
     zipInput[`${rootFolder}/${filePath}`] = strToU8(content);
   }
 
-  const zipped = zipSync(zipInput, { level: 9 });
+  const zipped = await new Promise<Uint8Array>((resolve, reject) => {
+    zip(zipInput, { level: 6 }, (error, data) => {
+      if (error) reject(error);
+      else resolve(data);
+    });
+  });
 
   // Copy into a fresh ArrayBuffer-backed view so the Blob owns a plain
   // ArrayBuffer (avoids SharedArrayBuffer typing friction with BlobPart).

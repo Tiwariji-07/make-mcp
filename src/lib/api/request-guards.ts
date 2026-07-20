@@ -228,16 +228,3 @@ export async function readJsonBodyCapped<T = unknown>(
     const text = Buffer.concat(chunks).toString("utf-8");
     return JSON.parse(text) as T;
 }
-
-/**
- * Server-side process-spawning verification (tsc / npm / pip) is expensive and
- * must not run on the public request path unless explicitly enabled.
- */
-export function isProcessVerificationAllowed(): boolean {
-    return process.env.MCPMINT_ALLOW_PROCESS_VERIFY === "1"
-        || process.env.MCPMINT_ALLOW_FULL_VERIFY === "1";
-}
-
-export function isFullVerifyAllowed(): boolean {
-    return process.env.MCPMINT_ALLOW_FULL_VERIFY === "1";
-}

@@ -48,6 +48,10 @@
   --color-surface: var(--surface);
   --color-surface-hover: var(--surface-hover);
   --color-lime: var(--lime);
+  --color-green: var(--green);
+  --color-blue: var(--blue);
+  --color-amber: var(--amber);
+  --color-red: var(--red);
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -83,7 +87,7 @@
 
   /* ── Muted ── */
   --muted: #1A1A1A;
-  --muted-foreground: #666666;
+  --muted-foreground: #A3A3A3;
 
   /* ── Accent ── */
   --accent: rgba(232, 255, 71, 0.08);
@@ -123,6 +127,7 @@
 
 .dark {
   /* Same as root — this IS a dark-first design */
+  color-scheme: dark;
 }
 
 .light {
@@ -140,13 +145,17 @@
   --secondary: #EEEEEA;
   --secondary-foreground: #0C0C0C;
   --muted: #F0F0EB;
-  --muted-foreground: #888888;
+  --muted-foreground: #5F5F5F;
   --accent: rgba(61, 79, 0, 0.08);
   --accent-foreground: #3D4F00;
   --destructive: #CC2E2E;
   --border: #D4D4D0;
   --input: #D4D4D0;
   --ring: #3D4F00;
+  --green: #006B45;
+  --blue: #005F91;
+  --amber: #8A4B00;
+  --red: #B42318;
   --sidebar: #FFFFFF;
   --sidebar-foreground: #0C0C0C;
   --sidebar-primary: #3D4F00;
@@ -155,6 +164,7 @@
   --sidebar-accent-foreground: #3D4F00;
   --sidebar-border: #D4D4D0;
   --sidebar-ring: #3D4F00;
+  color-scheme: light;
 }
 
 /* ═══════════════════════════════════════════════════════
@@ -177,6 +187,17 @@
   ::selection {
     background: rgba(232, 255, 71, 0.25);
     color: #EDEDED;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
   }
 }
 

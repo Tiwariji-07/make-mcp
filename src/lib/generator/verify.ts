@@ -1,5 +1,4 @@
 import {
-    existsSync,
     mkdtempSync,
     mkdirSync,
     readFileSync,
@@ -9,20 +8,14 @@ import {
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
-import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import type { GeneratedProject, VerificationCheck, VerificationMode, VerificationReport } from "./types.ts";
 
-const require = createRequire(import.meta.url);
 const COMMAND_TIMEOUT_MS = Number(process.env.MCPMINT_FULL_VERIFY_TIMEOUT_MS || 120_000);
 const MAX_COMMAND_OUTPUT_LENGTH = 6000;
 
 function resolveTypeScriptCompilerPath(): string {
-    const cwdPath = join(process.cwd(), "node_modules", "typescript", "lib", "tsc.js");
-    if (existsSync(cwdPath)) {
-        return cwdPath;
-    }
-
-    return require.resolve("typescript/lib/tsc.js");
+    return fileURLToPath(import.meta.resolve("typescript/lib/tsc.js"));
 }
 
 function writeProjectToTempDir(project: GeneratedProject): string {
