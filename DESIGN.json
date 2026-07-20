@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-20T00:00:00.000Z",
+  "title": "Design System: mcpmint",
+  "extensions": {
+    "colorMeta": {
+      "workbench-black": { "role": "neutral", "displayName": "Workbench Black", "canonical": "#0C0C0C", "tonalRamp": ["#0C0C0C", "#161616", "#2A2A2A", "#474747", "#6B6B6B", "#969696", "#C2C2C2", "#EDEDED"] },
+      "acid-lime": { "role": "primary", "displayName": "Acid Lime", "canonical": "#E8FF47", "tonalRamp": ["#1E2300", "#3D4700", "#5E6B00", "#829100", "#A8B900", "#C9DA26", "#E8FF47", "#F5FFAE"] },
+      "signal-amber": { "role": "warning", "displayName": "Signal Amber", "canonical": "#FFAA2C", "tonalRamp": ["#2B1600", "#542B00", "#7D4200", "#A85B00", "#D37606", "#F5941B", "#FFAA2C", "#FFD49A"] },
+      "signal-red": { "role": "danger", "displayName": "Signal Red", "canonical": "#FF4D4D", "tonalRamp": ["#2A0707", "#541010", "#7F1A1A", "#AA2727", "#D63737", "#FF4D4D", "#FF8A8A", "#FFD1D1"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Landing headline only." },
+      "body": { "displayName": "Body", "purpose": "Workflow copy, evidence, and configuration." },
+      "label": { "displayName": "Label", "purpose": "Compact states and field categories." }
+    },
+    "shadows": [],
+    "motion": [
+      { "name": "state-fast", "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)", "purpose": "Hover, focus, selection, and inline expansion." }
+    ],
+    "breakpoints": [
+      { "name": "sm", "value": "640px" },
+      { "name": "md", "value": "768px" },
+      { "name": "lg", "value": "1024px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The one primary action on a workflow surface.",
+      "html": "<button class=\"ds-btn-primary\">CONTINUE</button>",
+      "css": ".ds-btn-primary { background:#E8FF47; color:#0C0C0C; border:1px solid #E8FF47; border-radius:0; padding:12px 20px; font:600 13px 'Fira Code',monospace; transition:background 180ms cubic-bezier(.22,1,.36,1); } .ds-btn-primary:hover { background:#F0FF78; } .ds-btn-primary:focus-visible { outline:2px solid #E8FF47; outline-offset:3px; }"
+    },
+    {
+      "name": "Evidence Row",
+      "kind": "custom",
+      "description": "Scanner, capability, and diff evidence with an adjacent action.",
+      "html": "<div class=\"ds-evidence\"><strong>AMBER</strong><span>Tool parameter requires review</span><button>INSPECT</button></div>",
+      "css": ".ds-evidence { display:grid; grid-template-columns:auto 1fr auto; gap:12px; align-items:center; background:#161616; color:#EDEDED; border:1px solid #2A2A2A; padding:12px 16px; font:12px 'Fira Code',monospace; } .ds-evidence strong { color:#FFAA2C; } .ds-evidence button { background:transparent; color:#E8FF47; border:1px solid #3F461D; padding:8px 10px; } .ds-evidence button:focus-visible { outline:2px solid #E8FF47; outline-offset:2px; }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input-default",
+      "description": "A square, high-contrast configuration field.",
+      "html": "<input class=\"ds-input\" value=\"/absolute/path/to/server\" aria-label=\"Project path\">",
+      "css": ".ds-input { width:100%; background:#0C0C0C; color:#EDEDED; border:1px solid #2A2A2A; border-radius:0; padding:10px 12px; font:12px 'Fira Code',monospace; } .ds-input:hover { border-color:#474747; } .ds-input:focus-visible { outline:2px solid #E8FF47; outline-offset:1px; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Safety Workbench",
+    "overview": "A dark-first technical work surface with squared geometry, clear rules, terse labels, and one rare acid-lime control signal. Evidence is dense but ordered; routine configuration is quiet.",
+    "keyCharacteristics": ["Flat ruled surfaces", "Rare acid-lime actions", "Text-backed semantic color", "Progressive in-place inspection", "Responsive workflow layouts"],
+    "rules": [
+      { "name": "The One Signal Rule", "body": "Acid lime occupies less than ten percent of a workflow screen.", "section": "colors" },
+      { "name": "The Flat-by-Default Rule", "body": "A surface earns separation through function and a complete border.", "section": "elevation" }
+    ],
+    "dos": ["Do show the exact affected object behind every status.", "Do keep remediation adjacent to the finding it resolves."],
+    "donts": ["Don't use unexplained security scores.", "Don't use decorative glassmorphism or neon cyber-security styling.", "Don't use hidden-state wizard flows."]
+  }
+}

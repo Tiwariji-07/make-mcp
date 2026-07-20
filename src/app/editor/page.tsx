@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown, AlertTriangle, X, Layers } from "lucide-react";
+import { ArrowRight, ArrowLeft, Search, CheckSquare, Square, ChevronDown, AlertTriangle, X, Layers, FileUp, ShieldCheck } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,8 @@ import {
   formatTokens,
   type BudgetBand,
 } from "@/lib/token-estimate";
+import { analyzeCapabilities, selectOperationIds, type SelectionPreset } from "@/lib/capabilities";
+import { parseOpenAPIFromContent } from "@/lib/parsers/openapi";
 
 export default function EditorPage() {
   const router = useRouter();
@@ -36,18 +38,24 @@ export default function EditorPage() {
     setCurrentStep,
     exportConfig,
     setExportConfig,
+    regenerateSpec,
+    lastSpecDiff,
+    setError,
   } = useProjectStore();
 
   const compactMode = exportConfig.compactMode;
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedMethodFilters, setSelectedMethodFilters] = useState<string[]>([]);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Pick up the one-time validation summary stashed by the import step. Lazy
   // initializer so the read-and-clear happens exactly once on mount (guarded
   // against SSR inside consumeValidationSummary).
   const [validationSummary] = useState<ValidationSummary | null>(() => consumeValidationSummary());
   const [bannerDismissed, setBannerDismissed] = useState(false);
+  const [showCapabilities, setShowCapabilities] = useState(false);
+  const regenerateInput = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!spec) router.push("/");
@@ -71,6 +79,7 @@ export default function EditorPage() {
     [fullBudget.enabledCount]
   );
   const budget = compactMode ? compactBudget : fullBudget;
+  const capabilityReport = useMemo(() => spec?.apiModel ? analyzeCapabilities(spec.apiModel) : null, [spec]);
 
   if (!spec) return null;
 
@@ -82,8 +91,13 @@ export default function EditorPage() {
       ep.operationId?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesMethod =
       selectedMethodFilters.length === 0 || selectedMethodFilters.includes(ep.method);
-    return matchesSearch && matchesMethod;
+    const matchesTag = !selectedTag || (ep.tags || []).includes(selectedTag);
+    return matchesSearch && matchesMethod && matchesTag;
   });
+  const availableTags = [...new Set(spec.endpoints.flatMap((endpoint) => endpoint.tags || []))].sort();
+  const groupedEndpoints = [...filteredEndpoints].sort((left, right) =>
+    (left.tags?.[0] || "Untagged").localeCompare(right.tags?.[0] || "Untagged")
+    || left.path.localeCompare(right.path));
 
   const selectedCount = tools.filter((t) => t.enabled).length;
   const visibleToolIds = new Set(filteredEndpoints.map((endpoint) => endpoint.id));
@@ -98,6 +112,27 @@ export default function EditorPage() {
   const toggleVisibleTools = (enabled: boolean) => {
     for (const tool of visibleTools) {
       if (tool.enabled !== enabled) toggleTool(tool.endpointId);
+    }
+  };
+
+  const applyPreset = (preset: SelectionPreset) => {
+    if (!capabilityReport) return;
+    const selected = selectOperationIds(capabilityReport, preset);
+    for (const tool of tools) {
+      const shouldEnable = selected.has(tool.endpointId);
+      if (tool.enabled !== shouldEnable) toggleTool(tool.endpointId);
+    }
+    if (preset === "recommended") setExportConfig({ compactMode: false });
+    if (preset === "all-supported" && capabilityReport.operations.length > 25) setExportConfig({ compactMode: true });
+  };
+
+  const handleRegenerate = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const parsed = await parseOpenAPIFromContent(await file.text(), file.name);
+      regenerateSpec(parsed, file.name);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Could not import the updated specification.");
     }
   };
 
@@ -150,6 +185,58 @@ export default function EditorPage() {
           </div>
         )}
 
+        {lastSpecDiff && (
+          <div className="border-b border-primary/30 bg-primary/[0.04]">
+            <div className="mx-auto max-w-[1400px] px-3 py-3 sm:px-6">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p className="text-xs font-semibold">Spec regenerated · v{lastSpecDiff.oldVersion || "?"} → v{lastSpecDiff.newVersion || "?"}</p>
+                  <p className="mt-1 text-[11px] text-muted-foreground">{lastSpecDiff.added} added · {lastSpecDiff.changed} changed · {lastSpecDiff.removed} removed · existing names and selections preserved by method + path</p>
+                </div>
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer uppercase tracking-wider text-primary">Review drift</summary>
+                  <ul className="mt-2 max-h-40 min-w-[280px] space-y-1 overflow-auto border border-border bg-background p-3">
+                    {lastSpecDiff.changes.map((change) => <li key={`${change.kind}-${change.key}`}><span className="uppercase text-muted-foreground">{change.kind}</span> · {change.key} — {change.details.join("; ")}</li>)}
+                  </ul>
+                </details>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {capabilityReport && (
+          <div className="border-b border-border bg-background">
+            <div className="mx-auto flex max-w-[1400px] flex-wrap items-center gap-2 px-3 py-2 sm:px-6">
+              <button type="button" onClick={() => setShowCapabilities((value) => !value)} aria-expanded={showCapabilities} className="mr-auto flex min-h-9 items-center gap-2 text-[11px] uppercase tracking-wider text-muted-foreground hover:text-primary">
+                <ShieldCheck className="size-3.5" /> Capability report · {capabilityReport.supported} ready · {capabilityReport.manualReview} review · {capabilityReport.unsupported} unsupported
+              </button>
+              <span className="text-[9px] uppercase tracking-wider text-muted-foreground">Presets</span>
+              {([
+                ["recommended", "Recommended"], ["read-only", "Read only"], ["crud", "CRUD"], ["all-supported", "All supported"], ["none", "None"],
+              ] as [SelectionPreset, string][]).map(([value, label]) => (
+                <button key={value} type="button" onClick={() => applyPreset(value)} className="min-h-9 border border-border px-2.5 text-[10px] uppercase tracking-wider text-muted-foreground hover:border-primary/40 hover:text-primary">{label}</button>
+              ))}
+              <input ref={regenerateInput} type="file" accept=".json,.yaml,.yml,application/json,application/yaml" className="sr-only" onChange={(event) => { void handleRegenerate(event.target.files?.[0]); event.target.value = ""; }} />
+              <button type="button" onClick={() => regenerateInput.current?.click()} className="flex min-h-9 items-center gap-1.5 border border-primary/40 px-2.5 text-[10px] uppercase tracking-wider text-primary hover:bg-primary/10"><FileUp className="size-3.5" /> Update spec</button>
+            </div>
+            {showCapabilities && (
+              <div className="mx-auto max-w-[1400px] px-3 pb-3 sm:px-6">
+                <div className="max-h-64 overflow-auto border border-border">
+                  {capabilityReport.operations.filter((item) => item.status !== "supported" || item.risk === "high").map((item) => (
+                    <div key={item.operationId} className="grid gap-1 border-b border-border px-3 py-2 text-[11px] last:border-b-0 md:grid-cols-[90px_1fr_120px_1fr]">
+                      <span className={item.status === "unsupported" ? "text-red" : item.status === "manual-review" ? "text-amber" : "text-muted-foreground"}>{item.status}</span>
+                      <code>{item.method} {item.path}</code>
+                      <span>{item.risk} risk · {item.auth} auth</span>
+                      <span className="text-muted-foreground">{item.reasons.join("; ") || "Destructive operation; select intentionally."}</span>
+                    </div>
+                  ))}
+                  {capabilityReport.operations.every((item) => item.status === "supported" && item.risk !== "high") && <p className="p-3 text-xs text-muted-foreground">Every operation is supported with no high-risk items.</p>}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Toolbar */}
         <div className="border-b border-border bg-surface sticky top-14 z-20">
           <div className="max-w-[1400px] mx-auto px-3 sm:px-6 py-3 flex items-center gap-3 sm:gap-4 flex-wrap">
@@ -185,6 +272,13 @@ export default function EditorPage() {
               ))}
             </div>
 
+            {availableTags.length > 0 && (
+              <div className="flex max-w-full gap-1 overflow-x-auto pb-1 sm:pb-0" aria-label="Filter endpoints by tag">
+                <button type="button" onClick={() => setSelectedTag(null)} aria-pressed={selectedTag === null} className={`min-h-9 px-2 text-[10px] uppercase tracking-wider ${selectedTag === null ? "border border-primary text-primary" : "border border-transparent text-muted-foreground hover:text-foreground"}`}>All tags</button>
+                {availableTags.map((tag) => <button key={tag} type="button" onClick={() => setSelectedTag(tag)} aria-pressed={selectedTag === tag} className={`min-h-9 whitespace-nowrap px-2 text-[10px] uppercase tracking-wider ${selectedTag === tag ? "border border-primary text-primary" : "border border-transparent text-muted-foreground hover:text-foreground"}`}>{tag}</button>)}
+              </div>
+            )}
+
             {/* Select all */}
             <button
               onClick={() => toggleVisibleTools(!allVisibleSelected)}
@@ -214,16 +308,24 @@ export default function EditorPage() {
         {/* Endpoint rows */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-[1400px] mx-auto px-3 sm:px-6">
-            {filteredEndpoints.map((ep) => {
+            {groupedEndpoints.map((ep, endpointIndex) => {
               const tool = tools.find((t) => t.endpointId === ep.id);
               if (!tool) return null;
               const isExpanded = expandedId === ep.id;
               const visibleParamCount = tool.parameters.filter((param) => !param.hidden).length;
               const warnings = endpointWarnings.get(`${ep.method} ${ep.path}`) ?? [];
+              const capability = capabilityReport?.operations.find((item) => item.operationId === ep.id);
               const domId = ep.id.replace(/[^a-zA-Z0-9_-]+/g, "-");
+              const groupName = ep.tags?.[0] || "Untagged";
+              const previousGroup = endpointIndex > 0 ? groupedEndpoints[endpointIndex - 1].tags?.[0] || "Untagged" : null;
 
               return (
                 <div key={ep.id} className="border-b border-border">
+                  {groupName !== previousGroup && (
+                    <div className="border-b border-border bg-surface/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      {groupName} · {groupedEndpoints.filter((candidate) => (candidate.tags?.[0] || "Untagged") === groupName).length}
+                    </div>
+                  )}
                   {/* Row */}
                   <div
                     role="button"
@@ -295,6 +397,11 @@ export default function EditorPage() {
                       {ep.summary && (
                         <span className="text-[10px] text-muted-foreground truncate block mt-0.5">
                           {ep.summary}
+                        </span>
+                      )}
+                      {capability && (capability.status !== "supported" || capability.risk === "high") && (
+                        <span className={`mt-1 inline-block text-[9px] uppercase tracking-wider ${capability.status === "manual-review" ? "text-amber" : capability.status === "unsupported" ? "text-red" : "text-muted-foreground"}`}>
+                          {capability.status === "supported" ? capability.risk : capability.status}
                         </span>
                       )}
                       <span className="md:hidden text-[10px] text-muted-foreground truncate block mt-1">

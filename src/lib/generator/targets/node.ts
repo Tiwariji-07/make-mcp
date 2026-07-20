@@ -9,6 +9,7 @@ import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getNodeTransportStrategy, LOCALHOST_ORIGIN_HOSTS } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
 import { NODE_MCP_SDK_VERSION } from "../runtime-versions.ts";
+import { renderDependabot, renderDependencyLock, renderLicenseSummary, renderProvenance, renderSbom, runtimePin } from "../supply-chain.ts";
 import { toJsStringLiteral } from "../utils.ts";
 import { schemaToZodType, toZodType } from "../schema.ts";
 import {
@@ -1139,7 +1140,7 @@ function renderDockerfile(plan: GenerationPlan): string {
     // stdio:  docker run -i --rm IMAGE
     // HTTP:   docker run -p ${plan.server.port}:${plan.server.port} -e MCP_TRANSPORT=http IMAGE
     return `# ---- Build stage ----
-FROM node:22-alpine AS build
+FROM node:22.17.0-alpine3.22 AS build
 WORKDIR /app
 COPY package.json tsconfig.json ./
 RUN npm install
@@ -1150,7 +1151,7 @@ RUN npm run build
 RUN npm prune --omit=dev
 
 # ---- Runtime stage ----
-FROM node:22-alpine AS runtime
+FROM node:22.17.0-alpine3.22 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build --chown=node:node /app/node_modules ./node_modules
@@ -1459,13 +1460,13 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
         },
         dependencies: {
             "@modelcontextprotocol/sdk": NODE_MCP_SDK_VERSION,
-            dotenv: "^16.4.7",
-            zod: "^3.22.0",
+            dotenv: "16.4.7",
+            zod: "3.25.76",
         },
         devDependencies: {
-            "@types/node": "^20.0.0",
-            tsx: "^4.7.0",
-            typescript: "^5.3.0",
+            "@types/node": "20.19.43",
+            tsx: "4.7.0",
+            typescript: "5.3.3",
         },
     }, null, 2));
 
@@ -1494,6 +1495,13 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     files.set("src/api/operations.ts", renderOperations(plan));
     files.set("src/api/serialization.ts", renderSerialization());
     files.set("mcpmint.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("mcpmint.sbom.json", renderSbom(plan));
+    files.set("mcpmint.provenance.json", renderProvenance(plan, manifest));
+    files.set("mcpmint.dependencies.lock.json", renderDependencyLock(plan));
+    files.set("THIRD_PARTY_LICENSES.md", renderLicenseSummary(plan));
+    files.set(".github/dependabot.yml", renderDependabot(plan));
+    const pin = runtimePin(plan);
+    files.set(pin.name, pin.content);
     files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {

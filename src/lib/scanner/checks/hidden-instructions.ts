@@ -44,15 +44,16 @@ function collectPropertyDescriptions(schema: unknown): TextLocation[] {
 
 function isMostlyPrintableInstruction(blob: string): boolean {
     try {
-        const decoded = Buffer.from(blob, "base64");
+        const decoded = globalThis.atob(blob);
         if (decoded.length === 0) return false;
         let printable = 0;
-        for (const byte of decoded) {
+        for (let index = 0; index < decoded.length; index += 1) {
+            const byte = decoded.charCodeAt(index);
             if ((byte >= 0x20 && byte <= 0x7e) || byte === 0x09 || byte === 0x0a || byte === 0x0d) {
                 printable += 1;
             }
         }
-        return printable / decoded.length >= 0.85 && INSTRUCTION_PHRASE.test(decoded.toString("ascii"));
+        return printable / decoded.length >= 0.85 && INSTRUCTION_PHRASE.test(decoded);
     } catch {
         return false;
     }
@@ -69,6 +70,12 @@ function finding(
         severity,
         toolName: tool.name,
         message: `${detail} in ${location.label} of "${tool.name}"`,
+        parameterPath: location.label.startsWith("inputSchema property")
+            ? location.label.match(/"([^"]+)"/)?.[1]
+            : undefined,
+        explanation: "Hidden or encoded text can conceal instructions from the person approving the tool while remaining visible to a model or parser.",
+        remediation: "Remove the concealed content, rewrite the description as plain visible text, and review the source specification before exporting.",
+        evidence: detail,
     };
 }
 

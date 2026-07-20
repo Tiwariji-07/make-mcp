@@ -450,6 +450,18 @@ test("openapi -> node preview matches golden contract", () => {
     assert.ok(preview.files.some((file) => file.name === "src/api/client.ts"));
     assert.ok(preview.files.some((file) => file.name === "src/api/operations.ts"));
     assert.ok(preview.files.some((file) => file.name === "src/api/serialization.ts"));
+    assert.ok(preview.files.some((file) => file.name === "mcpmint.sbom.json"));
+    assert.ok(preview.files.some((file) => file.name === "mcpmint.provenance.json"));
+    assert.ok(preview.files.some((file) => file.name === "mcpmint.dependencies.lock.json"));
+    assert.ok(preview.files.some((file) => file.name === "THIRD_PARTY_LICENSES.md"));
+    assert.ok(preview.files.some((file) => file.name === ".github/dependabot.yml"));
+    assert.equal(getFileContent(preview, ".nvmrc"), "22.17.0\n");
+
+    const sbom = JSON.parse(getFileContent(preview, "mcpmint.sbom.json")) as { bomFormat: string; components: Array<{ name: string; version: string }> };
+    assert.equal(sbom.bomFormat, "CycloneDX");
+    assert.ok(sbom.components.some((component) => component.name === "@modelcontextprotocol/sdk" && component.version === "1.29.0"));
+    const provenance = JSON.parse(getFileContent(preview, "mcpmint.provenance.json")) as { buildDefinition: { externalParameters: { operationIds: string[] } } };
+    assert.deepEqual(provenance.buildDefinition.externalParameters.operationIds, ["POST-/customers"]);
 
     const serverFile = getFileContent(preview, "src/mcp/server.ts");
     const clientFile = getFileContent(preview, "src/api/client.ts");
@@ -875,8 +887,8 @@ test("python Dockerfile is a non-root multi-stage build supporting stdio and HTT
     });
 
     const dockerfile = getFileContent(preview, "Dockerfile");
-    assert.match(dockerfile, /FROM python:3\.11-slim AS build/);
-    assert.match(dockerfile, /FROM python:3\.11-slim AS runtime/);
+    assert.match(dockerfile, /FROM python:3\.11\.13-slim-bookworm AS build/);
+    assert.match(dockerfile, /FROM python:3\.11\.13-slim-bookworm AS runtime/);
     assert.match(dockerfile, /useradd --system --gid app/);
     assert.match(dockerfile, /USER app/);
     // billing-mcp fixture is http transport.

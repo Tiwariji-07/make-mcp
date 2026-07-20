@@ -37,14 +37,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { CopyButton } from "@/components/ui/copy-button";
+import { TrustScanPanel } from "@/components/export/trust-scan-panel";
+import { RequestSandbox } from "@/components/export/request-sandbox";
+import { InstallationWizard } from "@/components/export/installation-wizard";
 import { AuthConfig, ExportConfig, McpServerAuthConfig, ParsedSpec, ServerConfig, useProjectStore } from "@/store/project-store";
 import { buildToolPlans } from "@/lib/generator/planner";
 import { generateProjectInBrowser, previewProjectInBrowser } from "@/lib/client-generate";
-import {
-  joinProjectPath,
-  renderClaudeCodeCommand,
-  renderMcpClientConfig,
-} from "@/lib/generator/client-config";
+import { createScanAttestation, scanTools } from "@/lib/scanner";
+import { projectToolsToScanTools } from "@/lib/scanner/from-project";
+import { buildGenerationPlan } from "@/lib/generator/normalize";
 
 interface PreviewFile {
   name: string;
@@ -90,6 +91,7 @@ interface EndpointReviewItem {
 type AuthType = AuthConfig["type"];
 type McpServerAuthType = McpServerAuthConfig["type"];
 type Transport = ServerConfig["transport"];
+type GuidedPreset = "local" | "remote" | "docker";
 
 const defaultExportFeatures = {
   documentation: true,
@@ -230,102 +232,11 @@ interface GeneratedSnapshot {
   toolCount: number;
 }
 
-// Mirrors readme.ts getTransportUrl: stdio has no URL; SSE gets /sse suffix.
-function getSnapshotTransportUrl(snapshot: GeneratedSnapshot): string {
-  if (snapshot.transport === "stdio") return "";
-  if (snapshot.transport === "sse") return `http://${snapshot.host}:${snapshot.port}/sse`;
-  return `http://${snapshot.host}:${snapshot.port}`;
-}
-
-// Mirrors targets/node.ts + targets/python.ts renderReadme(): the stdio client
-// command/args the generator ships in the README's Example MCP Client Config.
-function getSnapshotStdioClient(snapshot: GeneratedSnapshot, projectDirectory: string): { command: string; args: string[] } {
-  if (snapshot.language === "python") {
-    return { command: "python", args: [joinProjectPath(projectDirectory, "src/server.py")] };
-  }
-  return { command: "node", args: [joinProjectPath(projectDirectory, "dist/src/index.js")] };
-}
-
-// Mirrors readme.ts getClientConfigEnv() for the single upstream-auth scheme the
-// UI configures. Env var names follow the generator's single-scheme fast path
-// (schemeName "apiKey"/"bearer"/"basic"); the generated .env.example / README is
-// the source of truth for multi-scheme specs.
-function getSnapshotClientEnv(snapshot: GeneratedSnapshot): Record<string, string> {
-  const env: Record<string, string> = {
-    API_BASE_URL: snapshot.baseUrl || "https://api.example.com",
-  };
-
-  if (snapshot.authType === "apiKey") {
-    env.API_KEY = "your_api_key_here";
-  } else if (snapshot.authType === "bearer") {
-    env.BEARER_TOKEN = "your_token_here";
-  } else if (snapshot.authType === "basic") {
-    env.BASIC_USERNAME = "your_username";
-    env.BASIC_PASSWORD = "your_password";
-  }
-
-  return env;
-}
-
-// Mirrors readme.ts renderClientConfig(): the mcpServers JSON block that ships in
-// the generated README. stdio uses command/args/env; HTTP/SSE uses a url.
-function buildMcpServersConfig(snapshot: GeneratedSnapshot, projectDirectory: string): string {
-  if (snapshot.transport === "stdio") {
-    const { command, args } = getSnapshotStdioClient(snapshot, projectDirectory);
-    return renderMcpClientConfig({
-      serverName: snapshot.serverName,
-      transport: "stdio",
-      stdioCommand: command,
-      stdioArgs: args,
-      env: getSnapshotClientEnv(snapshot),
-    });
-  }
-
-  return renderMcpClientConfig({
-    serverName: snapshot.serverName,
-    transport: snapshot.transport,
-    transportUrl: getSnapshotTransportUrl(snapshot),
-  });
-}
-
-// Cursor's mcp.json uses the same mcpServers shape as Claude Desktop.
-function buildCursorConfig(snapshot: GeneratedSnapshot, projectDirectory: string): string {
-  return buildMcpServersConfig(snapshot, projectDirectory);
-}
-
-// `claude mcp add` CLI form. For stdio the server entry is `-- <command> <args>`;
-// for HTTP/SSE it is `--transport <t> <url>`.
-function buildClaudeCliCommand(snapshot: GeneratedSnapshot, projectDirectory: string): string {
-  if (snapshot.transport === "stdio") {
-    const { command, args } = getSnapshotStdioClient(snapshot, projectDirectory);
-    return renderClaudeCodeCommand({
-      serverName: snapshot.serverName,
-      transport: "stdio",
-      stdioCommand: command,
-      stdioArgs: args,
-    });
-  }
-  return renderClaudeCodeCommand({
-    serverName: snapshot.serverName,
-    transport: snapshot.transport,
-    transportUrl: getSnapshotTransportUrl(snapshot),
-  });
-}
-
-function getInstallCommand(snapshot: GeneratedSnapshot): string {
-  if (snapshot.language === "python") return "pip install -e .";
-  return `${snapshot.packageManager} install`;
-}
-
-function getRunCommand(snapshot: GeneratedSnapshot): string {
-  if (snapshot.language === "python") return "python src/server.py";
-  return snapshot.packageManager === "npm" ? "npm run dev" : `${snapshot.packageManager} dev`;
-}
-
 export default function ExportPage() {
   const router = useRouter();
   const {
     spec,
+    specSource,
     tools,
     serverConfig,
     exportConfig,
@@ -348,6 +259,7 @@ export default function ExportPage() {
   const [error, setError] = useState<string | null>(null);
   const [portValue, setPortValue] = useState(serverConfig.port.toString());
   const [generated, setGenerated] = useState<GeneratedSnapshot | null>(null);
+  const [acceptedRiskSignature, setAcceptedRiskSignature] = useState<string | null>(null);
   // Privacy mode: generate entirely in the browser so the spec never leaves the
   // machine. Default ON. Switching off uses the server route for generation,
   // but process-spawning verification remains a local CLI-only operation.
@@ -365,6 +277,11 @@ export default function ExportPage() {
   if (!spec) return null;
 
   const selectedTools = tools.filter((t) => t.enabled);
+  const trustScanTools = projectToolsToScanTools(spec.apiModel, selectedTools);
+  const trustReport = scanTools(trustScanTools);
+  const trustSignature = JSON.stringify(trustScanTools);
+  const riskAccepted = acceptedRiskSignature === trustSignature;
+  const trustDownloadAllowed = trustReport.verdict !== "red" || riskAccepted;
   const generatorPayload = {
     spec: {
       info: spec.info,
@@ -399,6 +316,7 @@ export default function ExportPage() {
     },
   };
   const generatorSignature = JSON.stringify(generatorPayload);
+  const generationPlan = buildGenerationPlan(generatorPayload);
   const previewData = previewResult?.signature === generatorSignature ? previewResult.data : null;
   const previewFiles = previewData?.files || [];
   const exportFeatures = { ...defaultExportFeatures, ...(exportConfig.features ?? {}) };
@@ -443,6 +361,7 @@ export default function ExportPage() {
     isPortValid &&
     selectedTools.length > 0 &&
     isAuthValid;
+  const canGenerate = isFormValid && trustDownloadAllowed;
 
   const handleAuthTypeChange = (v: AuthType) => {
     if (v === "apiKey") {
@@ -465,6 +384,26 @@ export default function ExportPage() {
     });
   };
 
+  const applyGuidedPreset = (preset: GuidedPreset) => {
+    setExportConfig({
+      language: "node",
+      framework: "mcp-ts-sdk",
+      packageManager: "npm",
+      compactMode: preset !== "local" && selectedTools.length > 25,
+      features: { documentation: true, tests: true, docker: preset === "docker", verification: false },
+    });
+    setServerConfig({
+      transport: preset === "local" ? "stdio" : "http",
+      host: preset === "local" ? "localhost" : "0.0.0.0",
+      port: 8080,
+    });
+    setPortValue("8080");
+    setMcpServerAuthConfig(preset === "local"
+      ? { type: "none", allowedOrigins: [] }
+      : { type: "bearer", allowedOrigins: ["https://client.example.com"] });
+    setBrowserMode(true);
+  };
+
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -476,10 +415,31 @@ export default function ExportPage() {
     a.remove();
   };
 
+  const handleDownloadAttestation = async () => {
+    try {
+      const attestation = await createScanAttestation({
+        projectName: serverConfig.name,
+        source: specSource || spec.info.title,
+        subject: trustSignature,
+        report: trustReport,
+        riskAccepted,
+      });
+      triggerDownload(
+        new Blob([`${JSON.stringify(attestation, null, 2)}\n`], { type: "application/json" }),
+        `${serverConfig.name}-trust-attestation.json`,
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not create trust attestation");
+    }
+  };
+
   const handleGenerate = async () => {
     setIsGenerating(true);
     setError(null);
     try {
+      if (!trustDownloadAllowed) {
+        throw new Error("Review and acknowledge the red Trust Scan findings before downloading.");
+      }
       if (browserMode) {
         // Privacy mode: run the pure generator + zip entirely in the browser.
         // The spec never touches the network. Process verification is a local
@@ -597,6 +557,22 @@ export default function ExportPage() {
           {/* ─── Left: Configuration ─── */}
           <div className="flex-1 overflow-y-auto border-r border-border">
             <div className="max-w-2xl mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-0">
+
+              <Section title="Guided setup">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {([
+                    ["local", "Local Claude Desktop", "stdio · localhost · no network listener"],
+                    ["remote", "Remote secure HTTP", "HTTP · bearer auth · origin allow-list"],
+                    ["docker", "Docker / cloud", "HTTP · bearer auth · Docker output"],
+                  ] as [GuidedPreset, string, string][]).map(([value, label, description]) => (
+                    <button key={value} type="button" onClick={() => applyGuidedPreset(value)} className="min-h-24 border border-border bg-surface p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/[0.04]">
+                      <span className="block text-xs font-semibold text-foreground">{label}</span>
+                      <span className="mt-2 block text-[10px] leading-relaxed text-muted-foreground">{description}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">Presets establish safe transport, bind host, MCP authentication, origin, and packaging defaults. Every field remains editable below.</p>
+              </Section>
 
               {/* Language Selection */}
               <Section title="Language">
@@ -848,6 +824,48 @@ export default function ExportPage() {
                 </div>
               </Section>
 
+              <Section title="Trust Scan">
+                <TrustScanPanel
+                  report={trustReport}
+                  riskAccepted={riskAccepted}
+                  onRiskAcceptedChange={(accepted) => setAcceptedRiskSignature(accepted ? trustSignature : null)}
+                  onDownloadAttestation={() => { void handleDownloadAttestation(); }}
+                />
+              </Section>
+
+              <Section title="Test before download">
+                <details className="border border-border bg-surface">
+                  <summary className="min-h-11 cursor-pointer list-none px-4 py-3 text-xs font-semibold text-foreground focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2">
+                    Open request sandbox
+                    <span className="ml-2 font-normal text-muted-foreground">Inspect, mock, or execute one selected tool</span>
+                  </summary>
+                  <div className="border-t border-border p-4">
+                    <RequestSandbox tools={generationPlan.tools} baseUrl={spec.baseUrl} authConfig={authConfig} />
+                  </div>
+                </details>
+              </Section>
+
+              <Section title="Supply chain">
+                <div className="border border-border bg-surface px-4 py-3">
+                  <div className="flex items-start gap-3">
+                    <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
+                    <div className="space-y-2 text-xs">
+                      <p className="font-semibold text-foreground">Every download includes machine-readable provenance.</p>
+                      <p className="leading-relaxed text-muted-foreground">The archive contains a CycloneDX 1.5 SBOM, exact direct-dependency and runtime pins, license summary, weekly Dependabot updates, build provenance, the mcpmint manifest, and a registry-ready server declaration.</p>
+                      <div className="flex flex-wrap gap-2 text-[9px] uppercase tracking-wider text-primary">
+                        <span className="border border-primary/30 px-2 py-1">mcpmint.sbom.json</span>
+                        <span className="border border-primary/30 px-2 py-1">mcpmint.provenance.json</span>
+                        <span className="border border-primary/30 px-2 py-1">mcpmint.dependencies.lock.json</span>
+                        <span className="border border-primary/30 px-2 py-1">THIRD_PARTY_LICENSES.md</span>
+                        <span className="border border-primary/30 px-2 py-1">mcpmint.manifest.json</span>
+                        <span className="border border-primary/30 px-2 py-1">server.json</span>
+                      </div>
+                      <p className="text-[10px] leading-relaxed text-muted-foreground">Trust Scan attestation is downloaded separately so risk acceptance cannot be silently bundled into generated code.</p>
+                    </div>
+                  </div>
+                </div>
+              </Section>
+
               <Section title="Export Readiness">
                 <div className="grid gap-3">
                   <StatusRow
@@ -876,9 +894,9 @@ export default function ExportPage() {
                   />
                   <StatusRow
                     icon={<CheckCircle2 className="w-4 h-4" />}
-                    label="Generation checks"
-                    value="Structure validated · full verification via CLI"
-                    tone="muted"
+                    label="Trust scan"
+                    value={`${trustReport.verdict.toUpperCase()} · ${trustReport.score}/100${riskAccepted ? " · risk accepted" : ""}`}
+                    tone={trustReport.verdict === "green" ? "success" : trustReport.verdict === "yellow" ? "warning" : "danger"}
                   />
                 </div>
 
@@ -1093,10 +1111,12 @@ export default function ExportPage() {
                 <span className="text-[11px] text-red tracking-wider">{error}</span>
               )}
 
-              {!isFormValid && !isGenerating && (
+              {!canGenerate && !isGenerating && (
                 <span className="text-[10px] text-muted-foreground tracking-wider uppercase">
                   {selectedTools.length === 0
                     ? "No tools selected"
+                    : !trustDownloadAllowed
+                      ? "Trust Scan acknowledgement required"
                     : !isAuthValid
                       ? "Authentication settings are incomplete"
                       : "Complete all fields"}
@@ -1105,7 +1125,7 @@ export default function ExportPage() {
 
               <Button
                 onClick={handleGenerate}
-                disabled={isGenerating || !isFormValid}
+                disabled={isGenerating || !canGenerate}
                 className="bg-primary text-primary-foreground hover:bg-primary/90 px-10 font-semibold text-xs tracking-wider"
               >
                 {isGenerating ? (
@@ -1337,52 +1357,6 @@ function ManualReviewList({
 
 /* ─── Post-download success experience ─── */
 
-function ConfigSnippet({
-  title,
-  hint,
-  language,
-  value,
-}: {
-  title: string;
-  hint: string;
-  language: "json" | "bash";
-  value: string;
-}) {
-  return (
-    <div className="border border-border">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <div className="min-w-0">
-          <p className="text-xs font-medium text-foreground">{title}</p>
-          <p className="text-[10px] text-muted-foreground truncate">{hint}</p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
-          <span className="text-[9px] tracking-[0.15em] uppercase text-muted-foreground border border-border px-1.5 py-0.5">
-            {language}
-          </span>
-          <CopyButton value={value} />
-        </div>
-      </div>
-      <pre className="p-3 overflow-x-auto text-[11px] leading-5 bg-background">
-        <code>{value}</code>
-      </pre>
-    </div>
-  );
-}
-
-function StepItem({ index, title, children }: { index: number; title: string; children: React.ReactNode }) {
-  return (
-    <li className="flex gap-3">
-      <span className="shrink-0 w-6 h-6 rounded-full border border-primary/40 text-primary text-[11px] font-semibold flex items-center justify-center">
-        {index}
-      </span>
-      <div className="min-w-0 pt-0.5">
-        <p className="text-sm font-medium text-foreground">{title}</p>
-        <div className="mt-1 text-xs text-muted-foreground leading-relaxed">{children}</div>
-      </div>
-    </li>
-  );
-}
-
 function InlineCode({ children }: { children: React.ReactNode }) {
   return (
     <code className="text-[11px] bg-surface border border-border px-1 py-0.5 text-foreground">{children}</code>
@@ -1402,15 +1376,6 @@ function SuccessView({
   isGenerating: boolean;
   error: string | null;
 }) {
-  const isStdio = snapshot.transport === "stdio";
-  const [projectDirectory, setProjectDirectory] = useState(`/absolute/path/to/${snapshot.serverName}`);
-  const install = getInstallCommand(snapshot);
-  const run = getRunCommand(snapshot);
-  const claudeDesktopConfig = buildMcpServersConfig(snapshot, projectDirectory);
-  const cursorConfig = buildCursorConfig(snapshot, projectDirectory);
-  const claudeCli = buildClaudeCliCommand(snapshot, projectDirectory);
-  const transportUrl = getSnapshotTransportUrl(snapshot);
-
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="max-w-3xl mx-auto px-8 py-12 space-y-10">
@@ -1451,100 +1416,18 @@ function SuccessView({
           )}
         </div>
 
-        {/* Client config */}
+        {/* Installation wizard */}
         <section className="space-y-4">
           <div className="flex items-center gap-2">
             <Settings2 className="w-4 h-4 text-primary" />
             <h2 className="text-lg font-semibold tracking-tight" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-              Connect your client
+              Install and verify
             </h2>
           </div>
           <p className="text-xs text-muted-foreground leading-relaxed">
-            {isStdio
-              ? "Local clients need an absolute entrypoint path. Enter the folder where you extracted the project, then fill the env values before copying a config."
-              : "Client config formats vary, but the shape matches the generated README. Start the server first, then point your client at its URL. Configure .env on the machine where the server runs."}
+            Choose the machine and client you actually use. The wizard produces that client&rsquo;s configuration shape and location, validates local absolute paths, and ends with a real connection checkpoint.
           </p>
-
-          {isStdio && (
-            <div className="space-y-1.5">
-              <Label htmlFor="generated-project-directory" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
-                Extracted project folder
-              </Label>
-              <Input
-                id="generated-project-directory"
-                value={projectDirectory}
-                onChange={(event) => setProjectDirectory(event.target.value)}
-                placeholder={`/absolute/path/to/${snapshot.serverName}`}
-                className="h-9 bg-background border-border text-xs focus:border-primary"
-              />
-              {projectDirectory.startsWith("/absolute/path/to/") && (
-                <p className="text-[11px] text-amber-500">
-                  Replace the placeholder with the absolute path on your machine before using this config.
-                </p>
-              )}
-            </div>
-          )}
-
-          <ConfigSnippet
-            title="Claude Desktop"
-            hint="Add to claude_desktop_config.json"
-            language="json"
-            value={claudeDesktopConfig}
-          />
-          <ConfigSnippet
-            title="Cursor"
-            hint="Add to .cursor/mcp.json (or the global mcp.json)"
-            language="json"
-            value={cursorConfig}
-          />
-          <ConfigSnippet
-            title="Claude Code CLI"
-            hint="Register the server from your terminal"
-            language="bash"
-            value={claudeCli}
-          />
-
-          {!isStdio && (
-            <p className="text-[11px] text-muted-foreground leading-relaxed border border-border px-3 py-2">
-              HTTP/SSE clients connect to <InlineCode>{transportUrl}</InlineCode>. Env vars such as
-              upstream API auth and <InlineCode>MCP_AUTH_TOKEN</InlineCode> belong in the server&rsquo;s
-              <InlineCode>.env</InlineCode>, not in the client config.
-            </p>
-          )}
-        </section>
-
-        {/* Next steps */}
-        <section className="space-y-4">
-          <div className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-primary" />
-            <h2 className="text-lg font-semibold tracking-tight" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-              Next steps
-            </h2>
-          </div>
-          <ol className="space-y-4">
-            <StepItem index={1} title="Unzip the download">
-              Extract <InlineCode>{snapshot.serverName}.zip</InlineCode> to a working folder.
-            </StepItem>
-            <StepItem index={2} title="Install dependencies">
-              From the project root, run <InlineCode>{install}</InlineCode>
-              {snapshot.language === "python" && (
-                <> (or <InlineCode>uv pip install -e .</InlineCode> if you use uv)</>
-              )}
-              .
-            </StepItem>
-            <StepItem index={3} title="Configure secrets">
-              Copy <InlineCode>.env.example</InlineCode> to <InlineCode>.env</InlineCode> with{" "}
-              <InlineCode>cp .env.example .env</InlineCode>, then fill in the required values
-              {snapshot.authType !== "none" && <> (including your upstream API credentials)</>}.
-            </StepItem>
-            <StepItem index={4} title={isStdio ? "Add to your client" : "Start the server, then add it to your client"}>
-              {isStdio ? (
-                <>Use the client config above. Local clients launch the server with <InlineCode>{getSnapshotStdioClient(snapshot, projectDirectory).command}</InlineCode> over stdio using the absolute entrypoint path you provided.</>
-              ) : (
-                <>Run <InlineCode>{run}</InlineCode> to start the server, then point your client at <InlineCode>{transportUrl}</InlineCode> using the config above.</>
-              )}
-            </StepItem>
-          </ol>
+          <InstallationWizard snapshot={snapshot} />
         </section>
 
         {/* Star CTA */}

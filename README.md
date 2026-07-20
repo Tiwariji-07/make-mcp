@@ -18,11 +18,18 @@ Generate MCP servers in your browser from OpenAPI and Postman specs. File/paste 
 
 - **Flexible import** — Upload a file, paste a spec (or ⌘V / Ctrl+V straight onto the landing page), or fetch from a URL. OpenAPI/Swagger and Postman v2.1 collections are all supported. URL fetches run through a server-side, SSRF-hardened proxy so browser CORS never blocks them, and one click loads a built-in Petstore sample.
 - **Visual endpoint selection** — Choose which endpoints to expose as MCP tools.
+- **Capability-aware selection** — See supported, manual-review, unsupported, auth, and risk classifications; start from Recommended, Read-only, CRUD, or All-supported presets.
 - **Tool configuration** — Edit tool names, descriptions, and parameter details, with import-time validation warnings and per-endpoint review badges surfaced in the editor.
+- **Trust Scan gate** — Scan tool metadata for hidden instructions, poisoning, suspicious parameters, broad permissions, and exfiltration combinations. Red results block download until explicit acknowledgement; export a SHA-256-bound attestation.
+- **Request sandbox** — Inspect exact stored methods and paths, run no-network mocks, or explicitly execute bounded live tests before download.
+- **Project lifecycle** — Named local projects autosave, can be renamed/deleted/restored, and move between browsers as portable `.mcpmint.json` files.
+- **Spec regeneration** — Import an updated spec into a project, preserve matching customizations, and review added, changed, and removed operation drift.
 - 🪄 **Compact mode (meta-tools)** — For large APIs, emit just 3 meta-tools (`list_api_endpoints` / `get_api_endpoint_schema` / `invoke_api_endpoint`) instead of one tool per endpoint, keeping tool definitions from ballooning the model's context window. A live context-budget token meter shows the cost either way.
 - 🔒 **Client-side generation** — File/paste imports, generation, and zipping run entirely in your browser by default (via fflate). URL imports use a hardened server fetch; web generation never installs dependencies or starts generated processes.
 - **Multi-language export** — Generate Node.js (TypeScript) or Python (FastMCP) servers targeting MCP spec 2025-11-25.
 - **Ready-to-run code** — Download a complete, deployable MCP server as a zip, then copy paste-ready client configs from the success screen.
+- **Guided installation** — OS- and client-specific setup for Claude Desktop, Cursor, Claude Code, and VS Code, including exact config paths and connection checks.
+- **Supply-chain evidence** — Every archive includes exact dependency/runtime pins, CycloneDX SBOM, license summary, update automation, build provenance, generator manifest, and registry metadata.
 - **Session persistence** — Your in-progress import, selection, and configuration survive a page refresh.
 
 ## 🚀 Quick Start
@@ -47,6 +54,8 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 2. **Select** — Choose which endpoints to convert into MCP tools. Watch the context-budget meter, or flip on **compact mode** so a large API collapses into 3 meta-tools.
 3. **Configure** — Edit tool names, descriptions, and parameters for better LLM understanding; review any validation warnings.
 4. **Export** — Generate a complete MCP server in Node.js or Python. Generation stays in your browser by default. Then provide the extracted project&rsquo;s absolute path and copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI. Run `mcpmint generate ./api.yaml --verify full` locally when you need install/build/runtime verification.
+
+The CLI mirrors the safety workflow with `capabilities`, `scan`, and no-network-by-default `test` commands, plus endpoint/tag/method filters, JSON config files, dry-run plans, Trust Scan gating, attestations, tar/stdout output, atomic watch regeneration, and the same supply-chain output.
 
 ## 🛠️ Tech Stack
 

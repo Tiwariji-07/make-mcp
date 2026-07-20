@@ -8,6 +8,7 @@
 import type { ParsedSpec, ParsedEndpoint } from "../../src/lib/api-model/parsed-spec.ts";
 import type { GeneratorRequest } from "../../src/lib/generator/types.ts";
 import { parseGeneratorRequestPayload } from "../../src/lib/generator/request.ts";
+import { analyzeCapabilities, selectOperationIds, type SelectionPreset } from "../../src/lib/capabilities.ts";
 
 export interface BuildRequestOptions {
     language: "node" | "python";
@@ -24,6 +25,12 @@ export interface BuildRequestOptions {
         tests: boolean;
         verification: boolean;
     };
+    selectionPreset?: SelectionPreset;
+    selectedOperationIds?: string[];
+    selectedTags?: string[];
+    selectedMethods?: string[];
+    mcpServerAuthType?: "none" | "bearer";
+    allowedOrigins?: string[];
 }
 
 // Mirror of the store's sanitizeIdentifier.
@@ -85,7 +92,20 @@ function slugifyServerName(title: string): string {
 export function buildGeneratorRequest(spec: ParsedSpec, options: BuildRequestOptions): GeneratorRequest {
     const framework = options.language === "node" ? "mcp-ts-sdk" : "fastmcp";
 
-    const tools = spec.endpoints.map((endpoint) => ({
+    const presetIds = spec.apiModel
+        ? selectOperationIds(analyzeCapabilities(spec.apiModel), options.selectionPreset || "all-supported")
+        : new Set(spec.endpoints.map((endpoint) => endpoint.id));
+    const explicitIds = options.selectedOperationIds?.length ? new Set(options.selectedOperationIds) : null;
+    const tagsById = new Map(spec.apiModel?.operations.map((operation) => [operation.id, operation.tags || []]) || []);
+    const selectedTags = new Set(options.selectedTags || []);
+    const selectedMethods = new Set((options.selectedMethods || []).map((method) => method.toUpperCase()));
+    const tools = spec.endpoints.filter((endpoint) => {
+        const selectedById = explicitIds ? explicitIds.has(endpoint.id) || explicitIds.has(endpoint.operationId || "") : presetIds.has(endpoint.id);
+        const endpointTags = endpoint.tags || tagsById.get(endpoint.id) || [];
+        const selectedByTag = selectedTags.size === 0 || endpointTags.some((tag) => selectedTags.has(tag));
+        const selectedByMethod = selectedMethods.size === 0 || selectedMethods.has(endpoint.method);
+        return selectedById && selectedByTag && selectedByMethod;
+    }).map((endpoint) => ({
         endpointId: endpoint.id,
         enabled: true,
         toolName: deriveToolName(endpoint),
@@ -108,7 +128,7 @@ export function buildGeneratorRequest(spec: ParsedSpec, options: BuildRequestOpt
             transport: options.transport,
         },
         authConfig: inferAuthConfig(spec.securitySchemes),
-        mcpServerAuthConfig: { type: "none", allowedOrigins: [] },
+        mcpServerAuthConfig: { type: options.mcpServerAuthType || "none", allowedOrigins: options.allowedOrigins || [] },
         exportConfig: {
             language: options.language,
             framework,

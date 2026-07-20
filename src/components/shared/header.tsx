@@ -3,7 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Github } from "lucide-react";
+import { Github, Loader2, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import {
@@ -24,7 +24,16 @@ const STEPS = [
 
 export function Header() {
   const router = useRouter();
-  const { spec, currentStep, reset } = useProjectStore();
+  const {
+    spec,
+    currentStep,
+    reset,
+    activeProjectId,
+    projectName,
+    autosaveStatus,
+    setProjectName,
+    saveCurrentProject,
+  } = useProjectStore();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const stepIndex = STEPS.findIndex((s) => s.key === currentStep);
@@ -63,6 +72,32 @@ export function Header() {
             mcp<span className="text-primary">mint</span>
           </span>
         </Link>
+
+        {spec && (
+          <div className="hidden lg:flex min-w-0 max-w-[250px] items-center gap-2 border border-border bg-surface px-2 py-1">
+            <input
+              aria-label="Project name"
+              value={projectName}
+              maxLength={80}
+              onChange={(event) => setProjectName(event.target.value)}
+              className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none focus:text-primary"
+            />
+            {activeProjectId ? (
+              <span className={`shrink-0 text-[9px] uppercase tracking-wider ${autosaveStatus === "error" ? "text-red" : "text-muted-foreground"}`} role="status">
+                {autosaveStatus === "saving" && <Loader2 className="mr-1 inline size-3 animate-spin" />}
+                {autosaveStatus === "saving" ? "Saving" : autosaveStatus === "error" ? "Save failed" : "Saved"}
+              </span>
+            ) : (
+              <button
+                type="button"
+                onClick={() => saveCurrentProject()}
+                className="shrink-0 text-[9px] uppercase tracking-wider text-primary hover:text-foreground"
+              >
+                <Save className="mr-1 inline size-3" />Save
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Confirm start-over dialog */}
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
