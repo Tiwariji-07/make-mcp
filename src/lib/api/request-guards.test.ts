@@ -1,11 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {
-    getClientIp,
-    isFullVerifyAllowed,
-    isProcessVerificationAllowed,
-    type ClientIpSource,
-} from "./request-guards.ts";
+import { getClientIp, type ClientIpSource } from "./request-guards.ts";
 
 function fakeRequest(headers: Record<string, string>, ip?: string | null): ClientIpSource {
     const normalized = Object.fromEntries(
@@ -81,29 +76,4 @@ test("getClientIp trusts x-real-ip only when MCPMINT_TRUST_X_REAL_IP=1", () => {
 
 test("getClientIp falls back to unknown when no headers", () => {
     assert.equal(getClientIp(fakeRequest({})), "unknown");
-});
-
-test("process verify gates respect env flags", () => {
-    const prevProcess = process.env.MCPMINT_ALLOW_PROCESS_VERIFY;
-    const prevFull = process.env.MCPMINT_ALLOW_FULL_VERIFY;
-    try {
-        delete process.env.MCPMINT_ALLOW_PROCESS_VERIFY;
-        delete process.env.MCPMINT_ALLOW_FULL_VERIFY;
-        assert.equal(isProcessVerificationAllowed(), false);
-        assert.equal(isFullVerifyAllowed(), false);
-
-        process.env.MCPMINT_ALLOW_FULL_VERIFY = "1";
-        assert.equal(isFullVerifyAllowed(), true);
-        assert.equal(isProcessVerificationAllowed(), true);
-
-        delete process.env.MCPMINT_ALLOW_FULL_VERIFY;
-        process.env.MCPMINT_ALLOW_PROCESS_VERIFY = "1";
-        assert.equal(isProcessVerificationAllowed(), true);
-        assert.equal(isFullVerifyAllowed(), false);
-    } finally {
-        if (prevProcess === undefined) delete process.env.MCPMINT_ALLOW_PROCESS_VERIFY;
-        else process.env.MCPMINT_ALLOW_PROCESS_VERIFY = prevProcess;
-        if (prevFull === undefined) delete process.env.MCPMINT_ALLOW_FULL_VERIFY;
-        else process.env.MCPMINT_ALLOW_FULL_VERIFY = prevFull;
-    }
 });

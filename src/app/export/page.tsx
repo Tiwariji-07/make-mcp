@@ -493,7 +493,7 @@ export default function ExportPage() {
         // Privacy mode: run the pure generator + zip entirely in the browser.
         // The spec never touches the network. Verification is server-only, so
         // it is not run here (matches the note shown in the UI).
-        const { blob, filename } = generateProjectInBrowser(generatorPayload);
+        const { blob, filename } = await generateProjectInBrowser(generatorPayload);
         triggerDownload(blob, filename);
       } else {
         const res = await fetch("/api/generate", {

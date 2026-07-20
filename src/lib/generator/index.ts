@@ -1,7 +1,5 @@
 import { archiveGeneratedProject } from "./archive.ts";
-import { buildGenerationPlan } from "./normalize.ts";
-import { generateNodeProject } from "./targets/node.ts";
-import { generatePythonProject } from "./targets/python.ts";
+import { prepareGeneratedProject as prepareCoreProject } from "./core.ts";
 import type {
     GeneratedPreviewResponse,
     GeneratedProject,
@@ -9,31 +7,14 @@ import type {
     ValidationResult,
     VerificationReport,
 } from "./types.ts";
-import { validateGenerationPlan } from "./validate.ts";
 import { verifyGeneratedProject } from "./verify.ts";
-
-function generateProject(planLanguage: ReturnType<typeof buildGenerationPlan>): GeneratedProject {
-    return planLanguage.runtime.language === "node"
-        ? generateNodeProject(planLanguage)
-        : generatePythonProject(planLanguage);
-}
-
-function ensureValid(validation: ValidationResult) {
-    if (validation.errors.length > 0) {
-        throw new Error(validation.errors.map((error) => error.message).join("\n"));
-    }
-}
 
 function prepareGeneratedProject(request: GeneratorRequest): {
     project: GeneratedProject;
     validation: ValidationResult;
     verification?: VerificationReport;
 } {
-    const plan = buildGenerationPlan(request);
-    const validation = validateGenerationPlan(plan);
-    ensureValid(validation);
-
-    const project = generateProject(plan);
+    const { plan, project, validation } = prepareCoreProject(request);
     const verification = plan.features.verification
         ? verifyGeneratedProject(project, plan.verificationMode)
         : undefined;
