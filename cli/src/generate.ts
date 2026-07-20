@@ -24,8 +24,23 @@ import { verifyGeneratedProject } from "../../src/lib/generator/verify.ts";
 
 export interface GenerateResult {
     fileCount: number;
+    files: ReadonlyMap<string, string>;
     warnings: string[];
     verification?: VerificationReport;
+}
+
+export function generateProject(
+    request: GeneratorRequest,
+    verify: "off" | "fast" | "full",
+): GenerateResult {
+    const plan = buildGenerationPlan(request);
+    const validation = validateGenerationPlan(plan);
+    if (validation.errors.length > 0) {
+        throw new Error(validation.errors.map((error) => error.message).join("\n"));
+    }
+    const project = plan.runtime.language === "node" ? generateNodeProject(plan) : generatePythonProject(plan);
+    const verification = verify !== "off" ? verifyGeneratedProject(project, verify) : undefined;
+    return { fileCount: project.files.size, files: project.files, warnings: plan.warnings, verification };
 }
 
 export function writeProjectAtomically(
@@ -72,26 +87,7 @@ export function generateToDisk(
     verify: "off" | "fast" | "full",
     replaceExisting = false,
 ): GenerateResult {
-    const plan = buildGenerationPlan(request);
-
-    const validation = validateGenerationPlan(plan);
-    if (validation.errors.length > 0) {
-        throw new Error(validation.errors.map((error) => error.message).join("\n"));
-    }
-
-    const project =
-        plan.runtime.language === "node" ? generateNodeProject(plan) : generatePythonProject(plan);
-
-    let verification: VerificationReport | undefined;
-    if (verify !== "off") {
-        verification = verifyGeneratedProject(project, verify);
-    }
-
-    writeProjectAtomically(project.files, outDir, replaceExisting);
-
-    return {
-        fileCount: project.files.size,
-        warnings: plan.warnings,
-        verification,
-    };
+    const result = generateProject(request, verify);
+    writeProjectAtomically(result.files, outDir, replaceExisting);
+    return result;
 }

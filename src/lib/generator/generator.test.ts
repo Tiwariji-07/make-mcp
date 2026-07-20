@@ -452,6 +452,10 @@ test("openapi -> node preview matches golden contract", () => {
     assert.ok(preview.files.some((file) => file.name === "src/api/serialization.ts"));
     assert.ok(preview.files.some((file) => file.name === "mcpmint.sbom.json"));
     assert.ok(preview.files.some((file) => file.name === "mcpmint.provenance.json"));
+    assert.ok(preview.files.some((file) => file.name === "mcpmint.dependencies.lock.json"));
+    assert.ok(preview.files.some((file) => file.name === "THIRD_PARTY_LICENSES.md"));
+    assert.ok(preview.files.some((file) => file.name === ".github/dependabot.yml"));
+    assert.equal(getFileContent(preview, ".nvmrc"), "22.17.0\n");
 
     const sbom = JSON.parse(getFileContent(preview, "mcpmint.sbom.json")) as { bomFormat: string; components: Array<{ name: string; version: string }> };
     assert.equal(sbom.bomFormat, "CycloneDX");
@@ -883,8 +887,8 @@ test("python Dockerfile is a non-root multi-stage build supporting stdio and HTT
     });
 
     const dockerfile = getFileContent(preview, "Dockerfile");
-    assert.match(dockerfile, /FROM python:3\.11-slim AS build/);
-    assert.match(dockerfile, /FROM python:3\.11-slim AS runtime/);
+    assert.match(dockerfile, /FROM python:3\.11\.13-slim-bookworm AS build/);
+    assert.match(dockerfile, /FROM python:3\.11\.13-slim-bookworm AS runtime/);
     assert.match(dockerfile, /useradd --system --gid app/);
     assert.match(dockerfile, /USER app/);
     // billing-mcp fixture is http transport.

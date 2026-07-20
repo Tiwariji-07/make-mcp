@@ -9,10 +9,16 @@ const spec: ParsedSpec = {
     baseUrl: "https://api.example.com",
     format: "openapi",
     securitySchemes: {},
-    endpoints: [{ id: "listPets", method: "GET", path: "/pets", operationId: "listPets", parameters: [] }],
+    endpoints: [
+        { id: "listPets", method: "GET", path: "/pets", operationId: "listPets", tags: ["pets"], parameters: [] },
+        { id: "deletePet", method: "DELETE", path: "/pets/{id}", operationId: "deletePet", tags: ["admin"], parameters: [{ name: "id", in: "path", required: true, type: "string" }] },
+    ],
     apiModel: {
         source: { format: "openapi" }, info: { title: "Pets", version: "1" }, servers: [], baseUrls: ["https://api.example.com"], securitySchemes: {}, security: [],
-        operations: [{ id: "listPets", method: "GET", path: "/pets", operationId: "listPets", parameters: [], responses: [] }],
+        operations: [
+            { id: "listPets", method: "GET", path: "/pets", operationId: "listPets", tags: ["pets"], parameters: [], responses: [] },
+            { id: "deletePet", method: "DELETE", path: "/pets/{id}", operationId: "deletePet", tags: ["admin"], parameters: [{ name: "id", in: "path", required: true, schema: { type: "string" } }], responses: [] },
+        ],
     },
 };
 
@@ -20,6 +26,17 @@ const request = buildGeneratorRequest(spec, {
     language: "node", transport: "stdio", packageManager: "npm", compactMode: false,
     host: "localhost", port: 8080, verificationMode: "fast",
     features: { documentation: true, docker: false, tests: true, verification: false },
+    selectedOperationIds: ["listPets"],
+});
+
+test("CLI endpoint filters compose operation, tag, and method selections", () => {
+    const filtered = buildGeneratorRequest(spec, {
+        language: "node", transport: "stdio", packageManager: "npm", compactMode: false,
+        host: "localhost", port: 8080, verificationMode: "fast",
+        features: { documentation: true, docker: false, tests: true, verification: false },
+        selectedTags: ["admin"], selectedMethods: ["delete"],
+    });
+    assert.deepEqual(filtered.tools.map((tool) => tool.endpointId), ["deletePet"]);
 });
 
 test("CLI trust scan uses the generated tool contract", () => {

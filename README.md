@@ -29,7 +29,7 @@ Generate MCP servers in your browser from OpenAPI and Postman specs. File/paste 
 - **Multi-language export** — Generate Node.js (TypeScript) or Python (FastMCP) servers targeting MCP spec 2025-11-25.
 - **Ready-to-run code** — Download a complete, deployable MCP server as a zip, then copy paste-ready client configs from the success screen.
 - **Guided installation** — OS- and client-specific setup for Claude Desktop, Cursor, Claude Code, and VS Code, including exact config paths and connection checks.
-- **Supply-chain evidence** — Every archive includes CycloneDX SBOM, build provenance, generator manifest, and registry metadata.
+- **Supply-chain evidence** — Every archive includes exact dependency/runtime pins, CycloneDX SBOM, license summary, update automation, build provenance, generator manifest, and registry metadata.
 - **Session persistence** — Your in-progress import, selection, and configuration survive a page refresh.
 
 ## 🚀 Quick Start
@@ -55,7 +55,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 3. **Configure** — Edit tool names, descriptions, and parameters for better LLM understanding; review any validation warnings.
 4. **Export** — Generate a complete MCP server in Node.js or Python. Generation stays in your browser by default. Then provide the extracted project&rsquo;s absolute path and copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI. Run `mcpmint generate ./api.yaml --verify full` locally when you need install/build/runtime verification.
 
-The CLI mirrors the safety workflow with `capabilities`, `scan`, and no-network-by-default `test` commands, plus selection presets, Trust Scan gating, attestations, and the same SBOM/provenance output.
+The CLI mirrors the safety workflow with `capabilities`, `scan`, and no-network-by-default `test` commands, plus endpoint/tag/method filters, JSON config files, dry-run plans, Trust Scan gating, attestations, tar/stdout output, atomic watch regeneration, and the same supply-chain output.
 
 ## 🛠️ Tech Stack
 

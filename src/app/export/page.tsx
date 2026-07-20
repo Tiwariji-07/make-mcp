@@ -91,6 +91,7 @@ interface EndpointReviewItem {
 type AuthType = AuthConfig["type"];
 type McpServerAuthType = McpServerAuthConfig["type"];
 type Transport = ServerConfig["transport"];
+type GuidedPreset = "local" | "remote" | "docker";
 
 const defaultExportFeatures = {
   documentation: true,
@@ -383,6 +384,26 @@ export default function ExportPage() {
     });
   };
 
+  const applyGuidedPreset = (preset: GuidedPreset) => {
+    setExportConfig({
+      language: "node",
+      framework: "mcp-ts-sdk",
+      packageManager: "npm",
+      compactMode: preset !== "local" && selectedTools.length > 25,
+      features: { documentation: true, tests: true, docker: preset === "docker", verification: false },
+    });
+    setServerConfig({
+      transport: preset === "local" ? "stdio" : "http",
+      host: preset === "local" ? "localhost" : "0.0.0.0",
+      port: 8080,
+    });
+    setPortValue("8080");
+    setMcpServerAuthConfig(preset === "local"
+      ? { type: "none", allowedOrigins: [] }
+      : { type: "bearer", allowedOrigins: ["https://client.example.com"] });
+    setBrowserMode(true);
+  };
+
   const triggerDownload = (blob: Blob, filename: string) => {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -536,6 +557,22 @@ export default function ExportPage() {
           {/* ─── Left: Configuration ─── */}
           <div className="flex-1 overflow-y-auto border-r border-border">
             <div className="max-w-2xl mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-0">
+
+              <Section title="Guided setup">
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {([
+                    ["local", "Local Claude Desktop", "stdio · localhost · no network listener"],
+                    ["remote", "Remote secure HTTP", "HTTP · bearer auth · origin allow-list"],
+                    ["docker", "Docker / cloud", "HTTP · bearer auth · Docker output"],
+                  ] as [GuidedPreset, string, string][]).map(([value, label, description]) => (
+                    <button key={value} type="button" onClick={() => applyGuidedPreset(value)} className="min-h-24 border border-border bg-surface p-3 text-left transition-colors hover:border-primary/50 hover:bg-primary/[0.04]">
+                      <span className="block text-xs font-semibold text-foreground">{label}</span>
+                      <span className="mt-2 block text-[10px] leading-relaxed text-muted-foreground">{description}</span>
+                    </button>
+                  ))}
+                </div>
+                <p className="mt-3 text-[10px] leading-relaxed text-muted-foreground">Presets establish safe transport, bind host, MCP authentication, origin, and packaging defaults. Every field remains editable below.</p>
+              </Section>
 
               {/* Language Selection */}
               <Section title="Language">
@@ -814,10 +851,12 @@ export default function ExportPage() {
                     <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
                     <div className="space-y-2 text-xs">
                       <p className="font-semibold text-foreground">Every download includes machine-readable provenance.</p>
-                      <p className="leading-relaxed text-muted-foreground">The archive contains a CycloneDX 1.5 SBOM, build provenance with the exact operation IDs and runtime choices, the mcpmint manifest, and a registry-ready server declaration.</p>
+                      <p className="leading-relaxed text-muted-foreground">The archive contains a CycloneDX 1.5 SBOM, exact direct-dependency and runtime pins, license summary, weekly Dependabot updates, build provenance, the mcpmint manifest, and a registry-ready server declaration.</p>
                       <div className="flex flex-wrap gap-2 text-[9px] uppercase tracking-wider text-primary">
                         <span className="border border-primary/30 px-2 py-1">mcpmint.sbom.json</span>
                         <span className="border border-primary/30 px-2 py-1">mcpmint.provenance.json</span>
+                        <span className="border border-primary/30 px-2 py-1">mcpmint.dependencies.lock.json</span>
+                        <span className="border border-primary/30 px-2 py-1">THIRD_PARTY_LICENSES.md</span>
                         <span className="border border-primary/30 px-2 py-1">mcpmint.manifest.json</span>
                         <span className="border border-primary/30 px-2 py-1">server.json</span>
                       </div>

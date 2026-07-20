@@ -2,15 +2,17 @@
 // mcpmint CLI — generate MCP servers from OpenAPI/Postman specs, locally.
 // Your spec never leaves your machine: everything runs in this process.
 
-import { readFileSync, existsSync, readdirSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, watch, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseOpenAPIFromContent } from "../../src/lib/parsers/openapi.ts";
 import { buildGeneratorRequest, type BuildRequestOptions } from "./build-request.ts";
-import { generateToDisk } from "./generate.ts";
+import { generateProject, generateToDisk } from "./generate.ts";
 import { inspectSpec } from "./inspect.ts";
 import { analyzeCapabilities, type SelectionPreset } from "../../src/lib/capabilities.ts";
 import { createRequestAttestation, formatScan, scanRequest, testRequest } from "./workflows.ts";
+import { createTarGzip } from "./tar.ts";
 
 const VERSION = "0.1.0";
 
@@ -36,6 +38,8 @@ GENERATE OPTIONS
   --compact                     Emit 3 meta-tools instead of one tool per endpoint
   --preset <recommended|read-only|crud|all-supported>  Endpoint selection
   --operation <id>              Select one operation (repeatable; overrides preset)
+  --tag <tag>                   Keep operations with this tag (repeatable)
+  --method <verb>               Keep operations with this HTTP method (repeatable)
   --package-manager <npm|pnpm|yarn>  Node package manager    (default: npm)
   --host <host>                 HTTP/SSE bind host           (default: localhost)
   --port <port>                 HTTP/SSE port                (default: 8080)
@@ -46,6 +50,13 @@ GENERATE OPTIONS
   --force                       Overwrite a non-empty output directory
   --accept-risk                 Allow generation when Trust Scan verdict is red
   --attestation <file>          Write the Trust Scan attestation JSON
+  --mcp-auth <none|bearer>      Protect HTTP/SSE MCP access (default: none)
+  --origin <url>                Allowed browser origin (repeatable)
+  --config <file>               Read defaults from a JSON config file
+  --dry-run                     Print the generation plan; write nothing
+  --format <dir|tar>            Directory or deterministic tar.gz packaging
+  --stdout                      Write tar.gz bytes to stdout (implies --format tar)
+  --watch                       Regenerate atomically when the spec changes
 
 EXAMPLES
   mcpmint inspect ./petstore.json
@@ -82,6 +93,26 @@ function oneOf<T extends string>(value: string | undefined, allowed: readonly T[
     return value as T;
 }
 
+interface CliConfig {
+    lang?: string; transport?: string; out?: string; name?: string; compact?: boolean;
+    packageManager?: string; host?: string; port?: number; verify?: string;
+    tests?: boolean; docs?: boolean; docker?: boolean; force?: boolean;
+    preset?: string; operations?: string[]; tags?: string[]; methods?: string[];
+    acceptRisk?: boolean; attestation?: string; mcpAuth?: string; origins?: string[];
+    dryRun?: boolean; format?: string;
+}
+
+function loadCliConfig(path: string | undefined): CliConfig {
+    if (!path) return {};
+    try {
+        const parsed = JSON.parse(readFileSync(resolve(path), "utf8")) as unknown;
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("--config must contain a JSON object");
+        return parsed as CliConfig;
+    } catch (error) {
+        fail(`could not read --config: ${error instanceof Error ? error.message : String(error)}`);
+    }
+}
+
 async function runGenerate(specPath: string, rawArgs: string[]) {
     const { values } = parseArgs({
         args: rawArgs,
@@ -90,51 +121,69 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
             transport: { type: "string" },
             out: { type: "string" },
             name: { type: "string" },
-            compact: { type: "boolean", default: false },
+            compact: { type: "boolean" },
             "package-manager": { type: "string" },
             host: { type: "string" },
             port: { type: "string" },
             verify: { type: "string" },
-            "no-tests": { type: "boolean", default: false },
-            "no-docs": { type: "boolean", default: false },
-            docker: { type: "boolean", default: false },
-            force: { type: "boolean", default: false },
+            "no-tests": { type: "boolean" },
+            "no-docs": { type: "boolean" },
+            docker: { type: "boolean" },
+            force: { type: "boolean" },
             preset: { type: "string" },
             operation: { type: "string", multiple: true },
-            "accept-risk": { type: "boolean", default: false },
+            tag: { type: "string", multiple: true },
+            method: { type: "string", multiple: true },
+            "accept-risk": { type: "boolean" },
             attestation: { type: "string" },
+            "mcp-auth": { type: "string" },
+            origin: { type: "string", multiple: true },
+            config: { type: "string" },
+            "dry-run": { type: "boolean" },
+            format: { type: "string" },
+            stdout: { type: "boolean" },
+            watch: { type: "boolean" },
         },
         allowPositionals: false,
     });
+    const config = loadCliConfig(values.config);
 
     const spec = await loadSpec(specPath);
     if (spec.endpoints.length === 0) fail("no supported endpoints found in the spec");
 
-    const portNum = values.port ? Number(values.port) : 8080;
+    const portNum = values.port ? Number(values.port) : config.port ?? 8080;
     if (!Number.isInteger(portNum) || portNum < 1 || portNum > 65535) {
         fail(`--port must be an integer between 1 and 65535 (got "${values.port}")`);
     }
 
     const options: BuildRequestOptions = {
-        language: oneOf(values.lang, ["node", "python"] as const, "lang", "node"),
-        transport: oneOf(values.transport, ["stdio", "http", "sse"] as const, "transport", "stdio"),
-        packageManager: oneOf(values["package-manager"], ["npm", "pnpm", "yarn"] as const, "package-manager", "npm"),
-        compactMode: Boolean(values.compact),
-        name: values.name,
-        host: values.host || "localhost",
+        language: oneOf(values.lang ?? config.lang, ["node", "python"] as const, "lang", "node"),
+        transport: oneOf(values.transport ?? config.transport, ["stdio", "http", "sse"] as const, "transport", "stdio"),
+        packageManager: oneOf(values["package-manager"] ?? config.packageManager, ["npm", "pnpm", "yarn"] as const, "package-manager", "npm"),
+        compactMode: values.compact ?? config.compact ?? false,
+        name: values.name ?? config.name,
+        host: values.host ?? config.host ?? "localhost",
         port: portNum,
-        verificationMode: values.verify === "full" ? "full" : "fast",
+        verificationMode: (values.verify ?? config.verify) === "full" ? "full" : "fast",
         features: {
-            documentation: !values["no-docs"],
-            docker: Boolean(values.docker),
-            tests: !values["no-tests"],
-            verification: values.verify !== "off",
+            documentation: values["no-docs"] !== undefined ? !values["no-docs"] : config.docs ?? true,
+            docker: values.docker ?? config.docker ?? false,
+            tests: values["no-tests"] !== undefined ? !values["no-tests"] : config.tests ?? true,
+            verification: (values.verify ?? config.verify) !== "off",
         },
-        selectionPreset: oneOf(values.preset, ["recommended", "read-only", "crud", "all-supported"] as const, "preset", "all-supported") as SelectionPreset,
-        selectedOperationIds: values.operation,
+        selectionPreset: oneOf(values.preset ?? config.preset, ["recommended", "read-only", "crud", "all-supported"] as const, "preset", "all-supported") as SelectionPreset,
+        selectedOperationIds: values.operation ?? config.operations,
+        selectedTags: values.tag ?? config.tags,
+        selectedMethods: values.method ?? config.methods,
+        mcpServerAuthType: oneOf(values["mcp-auth"] ?? config.mcpAuth, ["none", "bearer"] as const, "mcp-auth", "none"),
+        allowedOrigins: values.origin ?? config.origins,
     };
 
-    const verify = oneOf(values.verify, ["off", "fast", "full"] as const, "verify", "fast");
+    const verify = oneOf(values.verify ?? config.verify, ["off", "fast", "full"] as const, "verify", "fast");
+    const outputFormat = oneOf(values.stdout ? "tar" : values.format ?? config.format, ["dir", "tar"] as const, "format", "dir");
+    const dryRun = values["dry-run"] ?? config.dryRun ?? false;
+    const acceptRisk = values["accept-risk"] ?? config.acceptRisk ?? false;
+    const diagnostics = values.stdout ? process.stderr : process.stdout;
 
     let request;
     try {
@@ -144,48 +193,72 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
     }
     if (request.tools.length === 0) fail("the selected preset/operations produced no tools");
     const scan = scanRequest(request);
-    process.stdout.write(`\n${formatScan(scan.report)}\n`);
-    if (scan.report.verdict === "red" && !values["accept-risk"]) {
+    diagnostics.write(`\n${formatScan(scan.report)}\n`);
+    const configuredOut = values.out ?? config.out;
+    const outDir = resolve(configuredOut || request.serverConfig.name);
+    const replaceExisting = values.force ?? config.force ?? false;
+    if (dryRun) {
+        const preview = generateProject(request, "off");
+        diagnostics.write(`${JSON.stringify({
+            dryRun: true,
+            source: resolve(specPath),
+            output: values.stdout ? "stdout" : outputFormat === "tar" ? `${outDir}.tar.gz` : outDir,
+            server: request.serverConfig,
+            runtime: request.exportConfig,
+            selectedOperations: request.tools.map((tool) => tool.endpointId),
+            files: [...preview.files.keys()].sort(),
+            warnings: preview.warnings,
+            trust: { verdict: scan.report.verdict, score: scan.report.score, findings: scan.report.findings.length, downloadBlocked: scan.report.verdict === "red" && !acceptRisk },
+        }, null, 2)}\n`);
+        return;
+    }
+    if (scan.report.verdict === "red" && !acceptRisk) {
         fail("Trust Scan is red. Review findings, then rerun with --accept-risk if the risk is intentional.");
     }
-    if (values.attestation) {
-        writeFileSync(resolve(values.attestation), await createRequestAttestation(request, resolve(specPath), Boolean(values["accept-risk"])), "utf8");
+    const attestationPath = values.attestation ?? config.attestation;
+    if (attestationPath) {
+        writeFileSync(resolve(attestationPath), await createRequestAttestation(request, resolve(specPath), acceptRisk), "utf8");
     }
-
-    const outDir = resolve(values.out || request.serverConfig.name);
-    if (existsSync(outDir) && readdirSync(outDir).length > 0 && !values.force) {
+    if (values.watch && outputFormat !== "dir") fail("--watch currently requires --format dir");
+    if (outputFormat === "dir" && existsSync(outDir) && readdirSync(outDir).length > 0 && !replaceExisting) {
         fail(`output directory "${outDir}" is not empty. Use --force to overwrite.`);
     }
 
     let result;
     try {
-        result = generateToDisk(request, outDir, verify, Boolean(values.force));
+        if (outputFormat === "dir") result = generateToDisk(request, outDir, verify, replaceExisting);
+        else {
+            result = generateProject(request, verify);
+            const archive = createTarGzip(result.files);
+            if (values.stdout) process.stdout.write(archive);
+            else writeFileSync(configuredOut ? outDir : `${outDir}.tar.gz`, archive);
+        }
     } catch (error) {
         fail(error instanceof Error ? error.message : "generation failed");
     }
 
-    process.stdout.write(`\n  Generated ${result.fileCount} files to ${outDir}\n`);
-    process.stdout.write(
+    diagnostics.write(`\n  Generated ${result.fileCount} files to ${values.stdout ? "stdout" : outputFormat === "tar" ? (configuredOut ? outDir : `${outDir}.tar.gz`) : outDir}\n`);
+    diagnostics.write(
         `  ${request.exportConfig.language} · ${request.serverConfig.transport} · ` +
             `${options.compactMode ? "compact (3 meta-tools)" : `${request.tools.length} tools`}\n`,
     );
 
     if (result.warnings.length > 0) {
-        process.stdout.write(`\n  Warnings:\n`);
+        diagnostics.write(`\n  Warnings:\n`);
         for (const warning of result.warnings.slice(0, 10)) {
-            process.stdout.write(`    - ${warning}\n`);
+            diagnostics.write(`    - ${warning}\n`);
         }
         if (result.warnings.length > 10) {
-            process.stdout.write(`    ... and ${result.warnings.length - 10} more\n`);
+            diagnostics.write(`    ... and ${result.warnings.length - 10} more\n`);
         }
     }
 
     if (result.verification) {
         const { status, mode, checks } = result.verification;
-        process.stdout.write(`\n  Verification (${mode}): ${status}\n`);
+        diagnostics.write(`\n  Verification (${mode}): ${status}\n`);
         for (const check of checks) {
             const mark = check.status === "passed" ? "PASS" : check.status === "failed" ? "FAIL" : "skip";
-            process.stdout.write(`    [${mark}] ${check.name}${check.details ? ` — ${check.details}` : ""}\n`);
+            diagnostics.write(`    [${mark}] ${check.name}${check.details ? ` — ${check.details}` : ""}\n`);
         }
         if (status === "failed") {
             process.stderr.write(`\n  Generated output failed verification.\n`);
@@ -193,7 +266,23 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
         }
     }
 
-    process.stdout.write(`\n  Next: cd ${outDir} && see README.md\n\n`);
+    if (outputFormat === "dir") diagnostics.write(`\n  Next: cd ${outDir} && see README.md\n\n`);
+    if (values.watch) {
+        diagnostics.write(`\n  Watching ${resolve(specPath)} for changes…\n`);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        watch(resolve(specPath), () => {
+            if (timer) clearTimeout(timer);
+            timer = setTimeout(() => {
+                const args = process.argv.slice(1).filter((argument) => argument !== "--watch");
+                if (!args.includes("--force")) args.push("--force");
+                const child = spawn(process.execPath, args, { stdio: "inherit" });
+                child.on("exit", (code) => {
+                    if (code === 0) diagnostics.write("  Regeneration complete.\n");
+                    else diagnostics.write(`  Regeneration failed with exit code ${code ?? "unknown"}.\n`);
+                });
+            }, 250);
+        });
+    }
 }
 
 async function runInspect(specPath: string) {

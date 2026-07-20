@@ -47,6 +47,7 @@ export default function EditorPage() {
 
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedMethodFilters, setSelectedMethodFilters] = useState<string[]>([]);
+  const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   // Pick up the one-time validation summary stashed by the import step. Lazy
   // initializer so the read-and-clear happens exactly once on mount (guarded
@@ -90,8 +91,13 @@ export default function EditorPage() {
       ep.operationId?.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesMethod =
       selectedMethodFilters.length === 0 || selectedMethodFilters.includes(ep.method);
-    return matchesSearch && matchesMethod;
+    const matchesTag = !selectedTag || (ep.tags || []).includes(selectedTag);
+    return matchesSearch && matchesMethod && matchesTag;
   });
+  const availableTags = [...new Set(spec.endpoints.flatMap((endpoint) => endpoint.tags || []))].sort();
+  const groupedEndpoints = [...filteredEndpoints].sort((left, right) =>
+    (left.tags?.[0] || "Untagged").localeCompare(right.tags?.[0] || "Untagged")
+    || left.path.localeCompare(right.path));
 
   const selectedCount = tools.filter((t) => t.enabled).length;
   const visibleToolIds = new Set(filteredEndpoints.map((endpoint) => endpoint.id));
@@ -266,6 +272,13 @@ export default function EditorPage() {
               ))}
             </div>
 
+            {availableTags.length > 0 && (
+              <div className="flex max-w-full gap-1 overflow-x-auto pb-1 sm:pb-0" aria-label="Filter endpoints by tag">
+                <button type="button" onClick={() => setSelectedTag(null)} aria-pressed={selectedTag === null} className={`min-h-9 px-2 text-[10px] uppercase tracking-wider ${selectedTag === null ? "border border-primary text-primary" : "border border-transparent text-muted-foreground hover:text-foreground"}`}>All tags</button>
+                {availableTags.map((tag) => <button key={tag} type="button" onClick={() => setSelectedTag(tag)} aria-pressed={selectedTag === tag} className={`min-h-9 whitespace-nowrap px-2 text-[10px] uppercase tracking-wider ${selectedTag === tag ? "border border-primary text-primary" : "border border-transparent text-muted-foreground hover:text-foreground"}`}>{tag}</button>)}
+              </div>
+            )}
+
             {/* Select all */}
             <button
               onClick={() => toggleVisibleTools(!allVisibleSelected)}
@@ -295,7 +308,7 @@ export default function EditorPage() {
         {/* Endpoint rows */}
         <div className="flex-1 overflow-y-auto">
           <div className="max-w-[1400px] mx-auto px-3 sm:px-6">
-            {filteredEndpoints.map((ep) => {
+            {groupedEndpoints.map((ep, endpointIndex) => {
               const tool = tools.find((t) => t.endpointId === ep.id);
               if (!tool) return null;
               const isExpanded = expandedId === ep.id;
@@ -303,9 +316,16 @@ export default function EditorPage() {
               const warnings = endpointWarnings.get(`${ep.method} ${ep.path}`) ?? [];
               const capability = capabilityReport?.operations.find((item) => item.operationId === ep.id);
               const domId = ep.id.replace(/[^a-zA-Z0-9_-]+/g, "-");
+              const groupName = ep.tags?.[0] || "Untagged";
+              const previousGroup = endpointIndex > 0 ? groupedEndpoints[endpointIndex - 1].tags?.[0] || "Untagged" : null;
 
               return (
                 <div key={ep.id} className="border-b border-border">
+                  {groupName !== previousGroup && (
+                    <div className="border-b border-border bg-surface/60 px-2 py-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                      {groupName} · {groupedEndpoints.filter((candidate) => (candidate.tags?.[0] || "Untagged") === groupName).length}
+                    </div>
+                  )}
                   {/* Row */}
                   <div
                     role="button"
