@@ -8,6 +8,8 @@ function finding(severity: Finding["severity"]): Finding {
         check: "HIDDEN_INSTRUCTIONS",
         severity,
         message: `${severity} test finding`,
+        explanation: "test explanation",
+        remediation: "test remediation",
     };
 }
 

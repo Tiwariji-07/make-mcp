@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Upload,
@@ -8,11 +8,16 @@ import {
   ArrowRight,
   FileCode2,
   Clock,
-  ChevronRight,
   ChevronUp,
   Loader2,
   X,
   Sparkles,
+  Check,
+  Download,
+  FolderUp,
+  Pencil,
+  Trash2,
+  Undo2,
 } from "lucide-react";
 import { Header } from "@/components/shared/header";
 import { Button } from "@/components/ui/button";
@@ -40,6 +45,12 @@ export default function ImportPage() {
     error,
     savedProjects,
     loadProject,
+    renameProject,
+    deleteProject,
+    undoDeleteProject,
+    exportProject,
+    importProject,
+    deletedProject,
     clearSavedProjects,
   } = useProjectStore();
 
@@ -51,6 +62,9 @@ export default function ImportPage() {
   const [isPasteParsing, setIsPasteParsing] = useState(false);
   const [isSampleLoading, setIsSampleLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
+  const [editingProjectName, setEditingProjectName] = useState("");
+  const projectFileInput = useRef<HTMLInputElement>(null);
 
   // Shared post-parse step for EVERY import path (file / url / paste / sample):
   // run validateSpec() via buildValidationSummary(), stash the concise summary
@@ -168,6 +182,34 @@ export default function ImportPage() {
     }
   };
 
+  const triggerProjectExport = (id: string, name: string) => {
+    const content = exportProject(id);
+    if (!content) return;
+    const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "") || "project"}.mcpmint.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleProjectFile = async (file: File | undefined) => {
+    if (!file) return;
+    if (file.size > MAX_LOCAL_SPEC_BYTES) {
+      setError("Project files are limited to 5 MB.");
+      return;
+    }
+    const text = await file.text();
+    if (importProject(text)) router.push("/editor");
+  };
+
+  const commitRename = (id: string) => {
+    if (renameProject(id, editingProjectName)) {
+      setEditingProjectId(null);
+      setEditingProjectName("");
+    }
+  };
+
   return (
     <div className="min-h-screen relative">
       <Header />
@@ -209,17 +251,38 @@ export default function ImportPage() {
               ))}
             </div>
 
-            {/* History toggle */}
-            {savedProjects.length > 0 && (
+            <div className="flex items-center gap-4">
+              <input
+                ref={projectFileInput}
+                type="file"
+                accept=".json,.mcpmint.json,application/json"
+                className="sr-only"
+                onChange={(event) => {
+                  void handleProjectFile(event.target.files?.[0]);
+                  event.target.value = "";
+                }}
+              />
               <button
-                onClick={() => setShowHistory(!showHistory)}
+                type="button"
+                onClick={() => projectFileInput.current?.click()}
                 className="flex items-center gap-2 text-[11px] tracking-[0.15em] uppercase text-muted-foreground hover:text-primary transition-colors"
               >
-                <Clock className="w-3.5 h-3.5" />
-                History ({savedProjects.length})
-                <ChevronUp className={`w-3 h-3 transition-transform ${showHistory ? "" : "rotate-180"}`} />
+                <FolderUp className="size-3.5" />
+                Import project
               </button>
-            )}
+              {savedProjects.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowHistory(!showHistory)}
+                  aria-expanded={showHistory}
+                  className="flex items-center gap-2 text-[11px] tracking-[0.15em] uppercase text-muted-foreground hover:text-primary transition-colors"
+                >
+                  <Clock className="w-3.5 h-3.5" />
+                  Projects ({savedProjects.length})
+                  <ChevronUp className={`w-3 h-3 transition-transform ${showHistory ? "" : "rotate-180"}`} />
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -227,29 +290,93 @@ export default function ImportPage() {
         {showHistory && savedProjects.length > 0 && (
           <div className="border-b border-border bg-surface animate-slide-down">
             <div className="max-w-[1400px] mx-auto px-6 py-4">
-              <div className="flex gap-3 overflow-x-auto pb-1">
+              <div className="mb-3 flex items-center justify-between gap-4">
+                <div>
+                  <p className="text-xs font-semibold">Browser projects</p>
+                  <p className="mt-0.5 text-[10px] uppercase tracking-wider text-muted-foreground">Autosaved locally · export a portable file for backup</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearHistory}
+                  className="text-[10px] uppercase tracking-wider text-muted-foreground transition-colors hover:text-red"
+                >
+                  Clear all
+                </button>
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {savedProjects.map((project) => (
-                  <button
+                  <div
                     key={project.id}
-                    onClick={() => handleLoadProject(project.id)}
-                    className="shrink-0 flex items-center gap-3 px-4 py-3 border border-border hover:border-primary/30 bg-background transition-colors group"
+                    className="flex min-w-0 items-center gap-2 border border-border bg-background p-3 transition-colors hover:border-primary/30"
                   >
-                    <div className="text-left">
-                      <p className="text-xs font-semibold truncate max-w-[180px]">{project.name}</p>
+                    <button
+                      type="button"
+                      onClick={() => handleLoadProject(project.id)}
+                      className="min-w-0 flex-1 text-left"
+                      aria-label={`Open ${project.name}`}
+                    >
+                      {editingProjectId === project.id ? (
+                        <span className="sr-only">Editing project name</span>
+                      ) : (
+                        <p className="truncate text-xs font-semibold">{project.name}</p>
+                      )}
                       <p className="text-[10px] text-muted-foreground tracking-wider uppercase mt-0.5">
                         {project.format} · {project.endpointCount} endpoints
                       </p>
-                    </div>
-                    <ChevronRight className="w-3.5 h-3.5 text-muted-foreground group-hover:text-primary" />
-                  </button>
+                    </button>
+                    {editingProjectId === project.id ? (
+                      <div className="flex min-w-0 flex-1 items-center gap-1">
+                        <Input
+                          autoFocus
+                          value={editingProjectName}
+                          maxLength={80}
+                          aria-label="New project name"
+                          onChange={(event) => setEditingProjectName(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter") commitRename(project.id);
+                            if (event.key === "Escape") setEditingProjectId(null);
+                          }}
+                          className="h-8 min-w-0 text-xs"
+                        />
+                        <button type="button" onClick={() => commitRename(project.id)} aria-label="Save project name" className="p-2 text-primary hover:text-foreground">
+                          <Check className="size-3.5" />
+                        </button>
+                        <button type="button" onClick={() => setEditingProjectId(null)} aria-label="Cancel rename" className="p-2 text-muted-foreground hover:text-foreground">
+                          <X className="size-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex shrink-0 items-center">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingProjectId(project.id);
+                            setEditingProjectName(project.name);
+                          }}
+                          aria-label={`Rename ${project.name}`}
+                          className="p-2 text-muted-foreground hover:text-primary"
+                        >
+                          <Pencil className="size-3.5" />
+                        </button>
+                        <button type="button" onClick={() => triggerProjectExport(project.id, project.name)} aria-label={`Export ${project.name}`} className="p-2 text-muted-foreground hover:text-primary">
+                          <Download className="size-3.5" />
+                        </button>
+                        <button type="button" onClick={() => deleteProject(project.id)} aria-label={`Delete ${project.name}`} className="p-2 text-muted-foreground hover:text-red">
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 ))}
-                <button
-                  onClick={handleClearHistory}
-                  className="shrink-0 px-3 py-3 text-[10px] text-muted-foreground hover:text-red tracking-wider uppercase transition-colors"
-                >
-                  Clear All
-                </button>
               </div>
+              {deletedProject && (
+                <div role="status" className="mt-3 flex items-center justify-between border-l-2 border-primary bg-background px-3 py-2 text-xs">
+                  <span>Deleted {deletedProject.project.name}</span>
+                  <button type="button" onClick={() => undoDeleteProject()} className="flex items-center gap-1.5 uppercase tracking-wider text-primary hover:text-foreground">
+                    <Undo2 className="size-3.5" /> Undo
+                  </button>
+                </div>
+              )}
             </div>
           </div>
         )}

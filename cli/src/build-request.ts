@@ -8,6 +8,7 @@
 import type { ParsedSpec, ParsedEndpoint } from "../../src/lib/api-model/parsed-spec.ts";
 import type { GeneratorRequest } from "../../src/lib/generator/types.ts";
 import { parseGeneratorRequestPayload } from "../../src/lib/generator/request.ts";
+import { analyzeCapabilities, selectOperationIds, type SelectionPreset } from "../../src/lib/capabilities.ts";
 
 export interface BuildRequestOptions {
     language: "node" | "python";
@@ -24,6 +25,8 @@ export interface BuildRequestOptions {
         tests: boolean;
         verification: boolean;
     };
+    selectionPreset?: SelectionPreset;
+    selectedOperationIds?: string[];
 }
 
 // Mirror of the store's sanitizeIdentifier.
@@ -85,7 +88,11 @@ function slugifyServerName(title: string): string {
 export function buildGeneratorRequest(spec: ParsedSpec, options: BuildRequestOptions): GeneratorRequest {
     const framework = options.language === "node" ? "mcp-ts-sdk" : "fastmcp";
 
-    const tools = spec.endpoints.map((endpoint) => ({
+    const presetIds = spec.apiModel
+        ? selectOperationIds(analyzeCapabilities(spec.apiModel), options.selectionPreset || "all-supported")
+        : new Set(spec.endpoints.map((endpoint) => endpoint.id));
+    const explicitIds = options.selectedOperationIds?.length ? new Set(options.selectedOperationIds) : null;
+    const tools = spec.endpoints.filter((endpoint) => explicitIds ? explicitIds.has(endpoint.id) || explicitIds.has(endpoint.operationId || "") : presetIds.has(endpoint.id)).map((endpoint) => ({
         endpointId: endpoint.id,
         enabled: true,
         toolName: deriveToolName(endpoint),

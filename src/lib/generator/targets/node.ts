@@ -9,6 +9,7 @@ import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getNodeTransportStrategy, LOCALHOST_ORIGIN_HOSTS } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
 import { NODE_MCP_SDK_VERSION } from "../runtime-versions.ts";
+import { renderProvenance, renderSbom } from "../supply-chain.ts";
 import { toJsStringLiteral } from "../utils.ts";
 import { schemaToZodType, toZodType } from "../schema.ts";
 import {
@@ -1494,6 +1495,8 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
     files.set("src/api/operations.ts", renderOperations(plan));
     files.set("src/api/serialization.ts", renderSerialization());
     files.set("mcpmint.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("mcpmint.sbom.json", renderSbom(plan));
+    files.set("mcpmint.provenance.json", renderProvenance(plan, manifest));
     files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {

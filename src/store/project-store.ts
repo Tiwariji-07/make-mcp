@@ -2,6 +2,14 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { getBodyContentKind, isBinarySchema, isShallowSimpleObjectSchema } from "@/lib/generator/utils";
 import { projectStorageKey, upsertProjectHistory } from "./project-history";
+import {
+    parseProjectFile,
+    serializeProjectFile,
+    type PortableProjectFile,
+    type ProjectSnapshotData,
+} from "./project-file";
+import { analyzeCapabilities } from "@/lib/capabilities";
+import { diffSpecs, type SpecDiff } from "@/lib/spec-diff";
 
 // Parsed API spec types now live in the lib layer (api-model). Re-exported here
 // so existing store consumers keep importing them from the store unchanged.
@@ -91,6 +99,11 @@ export interface SavedProject {
     savedAt: number;
 }
 
+export interface DeletedProject {
+    project: SavedProject;
+    data: string;
+}
+
 // Project state
 export interface ProjectState {
     // Current step
@@ -100,6 +113,11 @@ export interface ProjectState {
     spec: ParsedSpec | null;
     specSource: string | null; // filename or URL
     specFormat: string | null; // openapi or postman
+    activeProjectId: string | null;
+    projectName: string;
+    autosaveStatus: "idle" | "saving" | "saved" | "error";
+    lastSavedAt: number | null;
+    lastSpecDiff: SpecDiff | null;
 
     // Tool configurations
     tools: ToolConfig[];
@@ -118,6 +136,7 @@ export interface ProjectState {
 
     // Saved projects history
     savedProjects: SavedProject[];
+    deletedProject: DeletedProject | null;
 
     // Loading states
     isLoading: boolean;
@@ -125,6 +144,7 @@ export interface ProjectState {
 
     // Actions
     setSpec: (spec: ParsedSpec, source: string) => void;
+    regenerateSpec: (spec: ParsedSpec, source: string) => SpecDiff | null;
     clearSpec: () => void;
     setCurrentStep: (step: "import" | "editor" | "export") => void;
 
@@ -140,9 +160,14 @@ export interface ProjectState {
     setExportConfig: (config: ExportConfigUpdate) => void;
 
     // Project history actions
-    saveCurrentProject: () => boolean;
+    setProjectName: (name: string) => void;
+    saveCurrentProject: (name?: string) => boolean;
     loadProject: (id: string) => boolean;
+    renameProject: (id: string, name: string) => boolean;
     deleteProject: (id: string) => void;
+    undoDeleteProject: () => boolean;
+    exportProject: (id?: string) => string | null;
+    importProject: (text: string) => boolean;
     clearSavedProjects: () => void;
 
     // State actions
@@ -422,6 +447,11 @@ const initialState = {
     spec: null,
     specSource: null,
     specFormat: null,
+    activeProjectId: null,
+    projectName: "Untitled project",
+    autosaveStatus: "idle" as const,
+    lastSavedAt: null,
+    lastSpecDiff: null as SpecDiff | null,
     tools: [],
     authConfig: { type: "none" as const },
     mcpServerAuthConfig: { type: "none" as const, allowedOrigins: [] },
@@ -448,6 +478,7 @@ const initialState = {
         },
     },
     savedProjects: [] as SavedProject[],
+    deletedProject: null as DeletedProject | null,
     isLoading: false,
     error: null,
 };
@@ -479,6 +510,24 @@ function normalizeMcpServerAuthConfig(
 // Generate unique ID
 function generateId(): string {
     return Math.random().toString(36).substring(2, 9);
+}
+
+function snapshotFromState(state: ProjectState): ProjectSnapshotData | null {
+    if (!state.spec) return null;
+    return {
+        spec: state.spec,
+        specSource: state.specSource || "unknown",
+        specFormat: state.specFormat || state.spec.format || "openapi",
+        tools: state.tools,
+        authConfig: state.authConfig,
+        mcpServerAuthConfig: state.mcpServerAuthConfig,
+        serverConfig: state.serverConfig,
+        exportConfig: state.exportConfig,
+    };
+}
+
+function writeProjectSnapshot(id: string, data: ProjectSnapshotData): void {
+    localStorage.setItem(projectStorageKey(id), JSON.stringify(data));
 }
 
 // localStorage-backed storage that fails gracefully when a very large spec
@@ -514,26 +563,83 @@ export const useProjectStore = create<ProjectState>()(
         (set, get) => ({
             ...initialState,
 
-            setSpec: (spec, source) => set({
-                spec,
-                specSource: source,
-                specFormat: spec.format || "openapi",
-                tools: spec.endpoints.map(createToolConfig),
-                authConfig: inferAuthConfig(spec.securitySchemes),
-                serverConfig: {
-                    ...initialState.serverConfig,
-                    name: spec.info.title
-                        .toLowerCase()
-                        .replace(/[^a-z0-9]+/g, "-")
-                        .replace(/(^-|-$)/g, "") || "my-mcp-server",
-                },
-                error: null,
-            }),
+            setSpec: (spec, source) => {
+                const recommended = new Set(spec.apiModel
+                    ? analyzeCapabilities(spec.apiModel).operations.filter((item) => item.recommended).map((item) => item.operationId)
+                    : spec.endpoints.filter((endpoint) => endpoint.method === "GET").map((endpoint) => endpoint.id));
+                set({
+                    spec,
+                    specSource: source,
+                    specFormat: spec.format || "openapi",
+                    activeProjectId: null,
+                    projectName: spec.info.title || "Untitled project",
+                    autosaveStatus: "idle",
+                    lastSavedAt: null,
+                    lastSpecDiff: null,
+                    tools: spec.endpoints.map((endpoint) => ({ ...createToolConfig(endpoint), enabled: recommended.has(endpoint.id) })),
+                    authConfig: inferAuthConfig(spec.securitySchemes),
+                    serverConfig: {
+                        ...initialState.serverConfig,
+                        name: spec.info.title
+                            .toLowerCase()
+                            .replace(/[^a-z0-9]+/g, "-")
+                            .replace(/(^-|-$)/g, "") || "my-mcp-server",
+                    },
+                    error: null,
+                });
+            },
+
+            regenerateSpec: (nextSpec, source) => {
+                const state = get();
+                if (!state.spec) {
+                    state.setSpec(nextSpec, source);
+                    return null;
+                }
+                const diff = diffSpecs(state.spec, nextSpec);
+                const oldEndpointById = new Map(state.spec.endpoints.map((endpoint) => [endpoint.id, endpoint]));
+                const oldToolsByKey = new Map(state.tools.map((tool) => {
+                    const endpoint = oldEndpointById.get(tool.endpointId);
+                    return [endpoint ? `${endpoint.method} ${endpoint.path}` : tool.endpointId, tool] as const;
+                }));
+                const recommended = new Set(nextSpec.apiModel
+                    ? analyzeCapabilities(nextSpec.apiModel).operations.filter((item) => item.recommended).map((item) => item.operationId)
+                    : nextSpec.endpoints.filter((endpoint) => endpoint.method === "GET").map((endpoint) => endpoint.id));
+                const mergedTools = nextSpec.endpoints.map((endpoint) => {
+                    const fresh = createToolConfig(endpoint);
+                    const previous = oldToolsByKey.get(`${endpoint.method} ${endpoint.path}`);
+                    if (!previous) return { ...fresh, enabled: recommended.has(endpoint.id) };
+                    return sanitizeToolConfig({
+                        ...fresh,
+                        enabled: previous.enabled,
+                        toolName: previous.toolName,
+                        description: previous.description,
+                        parameters: fresh.parameters.map((parameter) => {
+                            const configured = previous.parameters.find((candidate) => candidate.location === parameter.location && candidate.originalName === parameter.originalName);
+                            return configured ? { ...parameter, name: configured.name, description: configured.description, hidden: configured.hidden } : parameter;
+                        }),
+                    });
+                });
+                set({
+                    spec: nextSpec,
+                    specSource: source,
+                    specFormat: nextSpec.format || "openapi",
+                    tools: mergedTools,
+                    authConfig: inferAuthConfig(nextSpec.securitySchemes),
+                    lastSpecDiff: diff,
+                    error: null,
+                });
+                return diff;
+            },
 
             clearSpec: () => set({
                 spec: null,
                 specSource: null,
                 specFormat: null,
+                activeProjectId: null,
+                projectName: "Untitled project",
+                autosaveStatus: "idle",
+                lastSavedAt: null,
+                lastSpecDiff: null,
                 tools: [],
                 currentStep: "import",
             }),
@@ -582,45 +688,41 @@ export const useProjectStore = create<ProjectState>()(
                 },
             })),
 
-            saveCurrentProject: () => {
+            setProjectName: (name) => set({ projectName: name }),
+
+            saveCurrentProject: (name) => {
                 const state = get();
                 if (!state.spec) return false;
-
-                const existing = state.savedProjects.find(
-                    (candidate) => candidate.source === (state.specSource || "unknown")
+                const snapshot = snapshotFromState(state);
+                if (!snapshot) return false;
+                const existing = state.savedProjects.find((candidate) =>
+                    candidate.id === state.activeProjectId
+                    || (!state.activeProjectId && candidate.source === snapshot.specSource)
                 );
+                const savedAt = Date.now();
+                const projectName = (name ?? state.projectName).trim() || state.spec.info.title || "Untitled project";
 
                 const project: SavedProject = {
                     id: existing?.id || generateId(),
-                    name: state.spec.info.title,
-                    source: state.specSource || "unknown",
-                    format: state.specFormat || "openapi",
+                    name: projectName,
+                    source: snapshot.specSource,
+                    format: snapshot.specFormat,
                     endpointCount: state.spec.endpoints.length,
-                    savedAt: Date.now(),
+                    savedAt,
                 };
 
                 // Store project data separately.
                 // NOTE: the "makemcp-project-*" key prefix is kept deliberately so
                 // existing users' saved projects survive the mcpmint rebrand.
                 try {
-                    localStorage.setItem(
-                        projectStorageKey(project.id),
-                        JSON.stringify({
-                            spec: state.spec,
-                            tools: state.tools,
-                            authConfig: state.authConfig,
-                            mcpServerAuthConfig: state.mcpServerAuthConfig,
-                            serverConfig: state.serverConfig,
-                            exportConfig: state.exportConfig,
-                        })
-                    );
+                    writeProjectSnapshot(project.id, snapshot);
                 } catch (e) {
                     console.error("Failed to save project:", e);
                     set({ error: "Your download succeeded, but this project could not be saved to browser history. Check private-browsing or storage settings." });
                     return false;
                 }
 
-                const update = upsertProjectHistory(state.savedProjects, project);
+                const update = upsertProjectHistory(state.savedProjects, project, 50);
                 for (const evicted of update.evicted) {
                     try {
                         localStorage.removeItem(projectStorageKey(evicted.id));
@@ -628,7 +730,14 @@ export const useProjectStore = create<ProjectState>()(
                         console.warn("Failed to remove evicted project data:", e);
                     }
                 }
-                set({ savedProjects: update.projects, error: null });
+                set({
+                    savedProjects: update.projects,
+                    activeProjectId: project.id,
+                    projectName,
+                    autosaveStatus: "saved",
+                    lastSavedAt: savedAt,
+                    error: null,
+                });
                 return true;
             },
 
@@ -640,7 +749,7 @@ export const useProjectStore = create<ProjectState>()(
                         return false;
                     }
 
-                    const { spec, tools, authConfig, mcpServerAuthConfig, serverConfig, exportConfig } = JSON.parse(data);
+                    const { spec, specSource, specFormat, tools, authConfig, mcpServerAuthConfig, serverConfig, exportConfig } = JSON.parse(data);
 
                     // Projects saved before the canonical migration lack
                     // spec.apiModel, which generation now requires.
@@ -649,10 +758,16 @@ export const useProjectStore = create<ProjectState>()(
                         return false;
                     }
 
+                    const project = get().savedProjects.find((candidate) => candidate.id === id);
                     set({
                         spec,
-                        specSource: spec?.info?.title || "Loaded Project",
-                        specFormat: spec?.format || "openapi",
+                        specSource: specSource || project?.source || spec?.info?.title || "Loaded Project",
+                        specFormat: specFormat || project?.format || spec?.format || "openapi",
+                        activeProjectId: id,
+                        projectName: project?.name || spec?.info?.title || "Untitled project",
+                        autosaveStatus: "saved",
+                        lastSavedAt: project?.savedAt || null,
+                        lastSpecDiff: null,
                         tools: Array.isArray(tools) ? tools.map(sanitizeToolConfig) : [],
                         authConfig,
                         mcpServerAuthConfig: normalizeMcpServerAuthConfig(mcpServerAuthConfig),
@@ -669,15 +784,127 @@ export const useProjectStore = create<ProjectState>()(
                 }
             },
 
+            renameProject: (id, name) => {
+                const normalized = name.trim();
+                if (!normalized) {
+                    set({ error: "Project name cannot be empty." });
+                    return false;
+                }
+                const exists = get().savedProjects.some((project) => project.id === id);
+                if (!exists) return false;
+                set((state) => ({
+                    savedProjects: state.savedProjects.map((project) => project.id === id ? { ...project, name: normalized } : project),
+                    ...(state.activeProjectId === id ? { projectName: normalized } : {}),
+                    error: null,
+                }));
+                return true;
+            },
+
             deleteProject: (id) => {
                 try {
+                    const project = get().savedProjects.find((candidate) => candidate.id === id);
+                    const data = localStorage.getItem(projectStorageKey(id));
+                    if (!project || !data) return;
                     localStorage.removeItem(projectStorageKey(id));
+                    set((state) => ({
+                        savedProjects: state.savedProjects.filter((candidate) => candidate.id !== id),
+                        deletedProject: { project, data },
+                        ...(state.activeProjectId === id ? {
+                            activeProjectId: null,
+                            autosaveStatus: "idle" as const,
+                            lastSavedAt: null,
+                        } : {}),
+                    }));
                 } catch (e) {
                     console.error("Failed to delete project:", e);
+                    set({ error: "Project could not be deleted. Check browser storage settings." });
                 }
-                set((state) => ({
-                    savedProjects: state.savedProjects.filter((p) => p.id !== id),
-                }));
+            },
+
+            undoDeleteProject: () => {
+                const deleted = get().deletedProject;
+                if (!deleted) return false;
+                try {
+                    localStorage.setItem(projectStorageKey(deleted.project.id), deleted.data);
+                    set((state) => ({
+                        savedProjects: [deleted.project, ...state.savedProjects.filter((project) => project.id !== deleted.project.id)],
+                        deletedProject: null,
+                        error: null,
+                    }));
+                    return true;
+                } catch (e) {
+                    console.error("Failed to restore project:", e);
+                    set({ error: "Project could not be restored. Check browser storage settings." });
+                    return false;
+                }
+            },
+
+            exportProject: (id) => {
+                const state = get();
+                const targetId = id || state.activeProjectId;
+                if (!targetId) {
+                    set({ error: "Save this project before exporting a project file." });
+                    return null;
+                }
+                const project = state.savedProjects.find((candidate) => candidate.id === targetId);
+                const raw = localStorage.getItem(projectStorageKey(targetId));
+                if (!project || !raw) {
+                    set({ error: "This project is no longer available in browser storage." });
+                    return null;
+                }
+                try {
+                    const data = JSON.parse(raw) as ProjectSnapshotData;
+                    const file: PortableProjectFile = {
+                        schemaVersion: 1,
+                        kind: "mcpmint-project",
+                        exportedAt: new Date().toISOString(),
+                        project,
+                        data,
+                    };
+                    return serializeProjectFile(file);
+                } catch {
+                    set({ error: "This saved project is damaged and cannot be exported." });
+                    return null;
+                }
+            },
+
+            importProject: (text) => {
+                try {
+                    const file = parseProjectFile(text);
+                    const state = get();
+                    const existing = state.savedProjects.find((project) =>
+                        project.id === file.project.id || project.source === file.project.source
+                    );
+                    const id = existing?.id || file.project.id || generateId();
+                    const savedAt = Date.now();
+                    const project: SavedProject = { ...file.project, id, savedAt };
+                    writeProjectSnapshot(id, file.data);
+                    const update = upsertProjectHistory(state.savedProjects, project, 50);
+                    for (const evicted of update.evicted) localStorage.removeItem(projectStorageKey(evicted.id));
+                    set({
+                        spec: file.data.spec,
+                        specSource: file.data.specSource,
+                        specFormat: file.data.specFormat,
+                        tools: file.data.tools.map(sanitizeToolConfig),
+                        authConfig: file.data.authConfig,
+                        mcpServerAuthConfig: normalizeMcpServerAuthConfig(file.data.mcpServerAuthConfig),
+                        serverConfig: file.data.serverConfig,
+                        exportConfig: normalizeExportConfig(file.data.exportConfig),
+                        currentStep: "editor",
+                        savedProjects: update.projects,
+                        activeProjectId: id,
+                        projectName: project.name,
+                        autosaveStatus: "saved",
+                        lastSavedAt: savedAt,
+                        lastSpecDiff: null,
+                        deletedProject: null,
+                        error: null,
+                    });
+                    return true;
+                } catch (e) {
+                    set({ error: e instanceof Error ? e.message : "Project file could not be imported." });
+                    return false;
+                }
             },
 
             clearSavedProjects: () => {
@@ -694,7 +921,7 @@ export const useProjectStore = create<ProjectState>()(
                     return;
                 }
 
-                set({ savedProjects: [], error: null });
+                set({ savedProjects: [], deletedProject: null, activeProjectId: null, autosaveStatus: "idle", lastSavedAt: null, error: null });
             },
 
             setLoading: (isLoading) => set({ isLoading }),
@@ -714,7 +941,7 @@ export const useProjectStore = create<ProjectState>()(
             // only path). Sessions persisted before the canonical migration have a
             // spec without apiModel and would throw deep inside generation, so
             // migrate drops the stale working session and keeps only config/history.
-            version: 2,
+            version: 3,
             migrate: (persistedState, version) => {
                 const persisted = (persistedState as PersistedProjectState | undefined) || {};
 
@@ -763,6 +990,9 @@ export const useProjectStore = create<ProjectState>()(
                 spec: state.spec,
                 specSource: state.specSource,
                 specFormat: state.specFormat,
+                activeProjectId: state.activeProjectId,
+                projectName: state.projectName,
+                lastSavedAt: state.lastSavedAt,
                 tools: state.tools,
                 authConfig: state.authConfig,
                 mcpServerAuthConfig: state.mcpServerAuthConfig,
@@ -772,3 +1002,53 @@ export const useProjectStore = create<ProjectState>()(
         }
     )
 );
+
+let projectAutosaveTimer: ReturnType<typeof setTimeout> | undefined;
+
+if (typeof window !== "undefined") {
+    useProjectStore.subscribe((state, previous) => {
+        const changed = state.spec !== previous.spec
+            || state.specSource !== previous.specSource
+            || state.specFormat !== previous.specFormat
+            || state.projectName !== previous.projectName
+            || state.tools !== previous.tools
+            || state.authConfig !== previous.authConfig
+            || state.mcpServerAuthConfig !== previous.mcpServerAuthConfig
+            || state.serverConfig !== previous.serverConfig
+            || state.exportConfig !== previous.exportConfig;
+        if (!changed || !state.activeProjectId || !state.spec) return;
+
+        useProjectStore.setState({ autosaveStatus: "saving" });
+        if (projectAutosaveTimer) clearTimeout(projectAutosaveTimer);
+        projectAutosaveTimer = setTimeout(() => {
+            const current = useProjectStore.getState();
+            const snapshot = snapshotFromState(current);
+            if (!snapshot || !current.activeProjectId) return;
+            try {
+                writeProjectSnapshot(current.activeProjectId, snapshot);
+                const savedAt = Date.now();
+                useProjectStore.setState({
+                    savedProjects: current.savedProjects.map((project) => project.id === current.activeProjectId
+                        ? {
+                            ...project,
+                            name: current.projectName.trim() || project.name,
+                            source: snapshot.specSource,
+                            format: snapshot.specFormat,
+                            endpointCount: snapshot.spec.endpoints.length,
+                            savedAt,
+                        }
+                        : project),
+                    autosaveStatus: "saved",
+                    lastSavedAt: savedAt,
+                    error: null,
+                });
+            } catch (error) {
+                console.error("Failed to autosave project:", error);
+                useProjectStore.setState({
+                    autosaveStatus: "error",
+                    error: "Autosave failed. Export a project file before leaving this page.",
+                });
+            }
+        }, 600);
+    });
+}

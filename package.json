@@ -14,7 +14,7 @@
     "test:generator:unit": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/generator/*.test.ts",
     "test:parsers": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/parsers/*.test.ts",
     "test:api": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/api/*.test.ts",
-    "test:workflow": "node --test --experimental-strip-types next-config.test.ts src/app/accessibility-contract.test.ts src/store/project-history.test.ts src/lib/scanner/*.test.ts src/lib/scanner/checks/*.test.ts",
+    "test:workflow": "node --test --experimental-strip-types next-config.test.ts src/app/accessibility-contract.test.ts src/store/project-history.test.ts src/store/project-file.test.ts src/lib/capabilities.test.ts src/lib/spec-diff.test.ts src/lib/sandbox/*.test.ts src/lib/scanner/*.test.ts src/lib/scanner/checks/*.test.ts",
     "test:cli": "node --test --experimental-strip-types cli/src/*.test.ts",
     "test:generated:full": "node --test --experimental-strip-types --experimental-specifier-resolution=node src/lib/generator/generated-full-verification.ci.ts",
     "audit:dependencies": "npm audit --audit-level=low"

@@ -2,13 +2,15 @@
 // mcpmint CLI — generate MCP servers from OpenAPI/Postman specs, locally.
 // Your spec never leaves your machine: everything runs in this process.
 
-import { readFileSync, existsSync, readdirSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { parseOpenAPIFromContent } from "../../src/lib/parsers/openapi.ts";
 import { buildGeneratorRequest, type BuildRequestOptions } from "./build-request.ts";
 import { generateToDisk } from "./generate.ts";
 import { inspectSpec } from "./inspect.ts";
+import { analyzeCapabilities, type SelectionPreset } from "../../src/lib/capabilities.ts";
+import { createRequestAttestation, formatScan, scanRequest, testRequest } from "./workflows.ts";
 
 const VERSION = "0.1.0";
 
@@ -19,6 +21,9 @@ Your spec never leaves your machine.
 USAGE
   mcpmint generate <spec> [options]
   mcpmint inspect  <spec>
+  mcpmint capabilities <spec>
+  mcpmint scan <spec> [--attestation <file>]
+  mcpmint test <spec> --operation <id> [--args <json>] [--live --allow-mutation]
   mcpmint --help | --version
 
   <spec> is a path to an OpenAPI/Swagger (JSON or YAML) or Postman collection file.
@@ -29,6 +34,8 @@ GENERATE OPTIONS
   --out <dir>                   Output directory             (default: ./<server-name>)
   --name <name>                 Server name                  (default: derived from spec title)
   --compact                     Emit 3 meta-tools instead of one tool per endpoint
+  --preset <recommended|read-only|crud|all-supported>  Endpoint selection
+  --operation <id>              Select one operation (repeatable; overrides preset)
   --package-manager <npm|pnpm|yarn>  Node package manager    (default: npm)
   --host <host>                 HTTP/SSE bind host           (default: localhost)
   --port <port>                 HTTP/SSE port                (default: 8080)
@@ -37,6 +44,8 @@ GENERATE OPTIONS
   --no-docs                     Skip README/docs
   --docker                      Include Dockerfile + compose
   --force                       Overwrite a non-empty output directory
+  --accept-risk                 Allow generation when Trust Scan verdict is red
+  --attestation <file>          Write the Trust Scan attestation JSON
 
 EXAMPLES
   mcpmint inspect ./petstore.json
@@ -90,6 +99,10 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
             "no-docs": { type: "boolean", default: false },
             docker: { type: "boolean", default: false },
             force: { type: "boolean", default: false },
+            preset: { type: "string" },
+            operation: { type: "string", multiple: true },
+            "accept-risk": { type: "boolean", default: false },
+            attestation: { type: "string" },
         },
         allowPositionals: false,
     });
@@ -117,6 +130,8 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
             tests: !values["no-tests"],
             verification: values.verify !== "off",
         },
+        selectionPreset: oneOf(values.preset, ["recommended", "read-only", "crud", "all-supported"] as const, "preset", "all-supported") as SelectionPreset,
+        selectedOperationIds: values.operation,
     };
 
     const verify = oneOf(values.verify, ["off", "fast", "full"] as const, "verify", "fast");
@@ -126,6 +141,15 @@ async function runGenerate(specPath: string, rawArgs: string[]) {
         request = buildGeneratorRequest(spec, options);
     } catch (error) {
         fail(error instanceof Error ? error.message : "failed to build generation request");
+    }
+    if (request.tools.length === 0) fail("the selected preset/operations produced no tools");
+    const scan = scanRequest(request);
+    process.stdout.write(`\n${formatScan(scan.report)}\n`);
+    if (scan.report.verdict === "red" && !values["accept-risk"]) {
+        fail("Trust Scan is red. Review findings, then rerun with --accept-risk if the risk is intentional.");
+    }
+    if (values.attestation) {
+        writeFileSync(resolve(values.attestation), await createRequestAttestation(request, resolve(specPath), Boolean(values["accept-risk"])), "utf8");
     }
 
     const outDir = resolve(values.out || request.serverConfig.name);
@@ -177,6 +201,49 @@ async function runInspect(specPath: string) {
     process.stdout.write(`\n${inspectSpec(spec)}\n\n`);
 }
 
+async function runCapabilities(specPath: string) {
+    const spec = await loadSpec(specPath);
+    if (!spec.apiModel) fail("canonical API model unavailable");
+    const report = analyzeCapabilities(spec.apiModel);
+    process.stdout.write(`\nCapabilities: ${report.supported} ready · ${report.manualReview} manual review · ${report.unsupported} unsupported · ${report.recommended} recommended\n`);
+    for (const item of report.operations) {
+        process.stdout.write(`  [${item.status}] ${item.method} ${item.path} · ${item.risk} risk · ${item.auth} auth${item.reasons.length ? ` — ${item.reasons.join("; ")}` : ""}\n`);
+    }
+    process.stdout.write("\n");
+}
+
+async function runScan(specPath: string, rawArgs: string[]) {
+    const { values } = parseArgs({ args: rawArgs, options: { attestation: { type: "string" }, "accept-risk": { type: "boolean", default: false } }, allowPositionals: false });
+    const spec = await loadSpec(specPath);
+    const request = buildGeneratorRequest(spec, {
+        language: "node", transport: "stdio", packageManager: "npm", compactMode: false,
+        host: "localhost", port: 8080, verificationMode: "fast",
+        features: { documentation: true, docker: false, tests: true, verification: false },
+    });
+    const scan = scanRequest(request);
+    process.stdout.write(`\n${formatScan(scan.report)}\n\n`);
+    if (values.attestation) writeFileSync(resolve(values.attestation), await createRequestAttestation(request, resolve(specPath), Boolean(values["accept-risk"])), "utf8");
+    if (scan.report.verdict === "red" && !values["accept-risk"]) process.exitCode = 2;
+}
+
+async function runTest(specPath: string, rawArgs: string[]) {
+    const { values } = parseArgs({ args: rawArgs, options: { operation: { type: "string" }, args: { type: "string" }, live: { type: "boolean", default: false }, "allow-mutation": { type: "boolean", default: false } }, allowPositionals: false });
+    if (!values.operation) fail("test requires --operation <id>");
+    const spec = await loadSpec(specPath);
+    const request = buildGeneratorRequest(spec, {
+        language: "node", transport: "stdio", packageManager: "npm", compactMode: false,
+        host: "localhost", port: 8080, verificationMode: "fast",
+        features: { documentation: true, docker: false, tests: true, verification: false },
+        selectedOperationIds: [values.operation],
+    });
+    let args: Record<string, unknown> | undefined;
+    if (values.args) {
+        try { args = JSON.parse(values.args) as Record<string, unknown>; } catch { fail("--args must be a JSON object"); }
+    }
+    const result = await testRequest({ request, operationId: values.operation, args, live: Boolean(values.live), allowMutation: Boolean(values["allow-mutation"]) });
+    process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
 async function main() {
     const argv = process.argv.slice(2);
 
@@ -192,11 +259,14 @@ async function main() {
     const command = argv[0];
     const rest = argv.slice(1);
 
-    if (command === "generate" || command === "inspect") {
+    if (["generate", "inspect", "capabilities", "scan", "test"].includes(command)) {
         const specPath = rest[0];
         if (!specPath || specPath.startsWith("-")) fail(`${command} requires a <spec> file path`);
         if (command === "generate") await runGenerate(specPath, rest.slice(1));
-        else await runInspect(specPath);
+        else if (command === "inspect") await runInspect(specPath);
+        else if (command === "capabilities") await runCapabilities(specPath);
+        else if (command === "scan") await runScan(specPath, rest.slice(1));
+        else await runTest(specPath, rest.slice(1));
         return;
     }
 

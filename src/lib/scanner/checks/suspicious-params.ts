@@ -56,11 +56,19 @@ export function checkSuspiciousParams(tools: ScanTool[]): Finding[] {
                 check: "SUSPICIOUS_PARAMS",
                 severity: authRelated ? "yellow" : "red",
                 toolName: tool.name,
+                parameterPath: parameter.path,
                 message:
                     `suspicious parameter "${parameter.name}"${pathDetail} in tool "${tool.name}"` +
                     (authRelated
                         ? " should be reviewed in its authentication context"
                         : " is not explained by an authentication-related purpose"),
+                explanation: authRelated
+                    ? "The tool requests secret material in a plausible authentication flow, but model-visible parameters can still expose credentials to prompts, logs, or upstream systems."
+                    : "A tool unrelated to authentication requests secret or high-impact personal data, which is a strong credential-harvesting signal.",
+                remediation: authRelated
+                    ? "Prefer environment variables or a host-managed secret store. If the parameter is unavoidable, document where it is sent and prevent it from being logged."
+                    : "Remove the parameter from the tool schema and read the value from a host-managed secret. If it is genuinely required, rename and document the tool so its security purpose is explicit.",
+                evidence: parameter.path,
             });
         }
     }

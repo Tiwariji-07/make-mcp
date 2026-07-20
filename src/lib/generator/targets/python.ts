@@ -9,6 +9,7 @@ import { collectAuthSchemes, getAuthSchemeKey } from "../strategies/auth.ts";
 import { getPythonTransportRunLine, pythonNeedsHttpServer, LOCALHOST_ORIGIN_HOSTS } from "../strategies/transport.ts";
 import { renderGeneratedReadme } from "../readme.ts";
 import { FASTMCP_VERSION } from "../runtime-versions.ts";
+import { renderProvenance, renderSbom } from "../supply-chain.ts";
 import { toPythonStringLiteral } from "../utils.ts";
 import { toPythonType } from "../schema.ts";
 import {
@@ -1499,6 +1500,8 @@ name = ${JSON.stringify(`io.github.OWNER/${sanitizeServerId(plan.server.name)}`)
     }
     files.set("src/__init__.py", "");
     files.set("mcpmint.manifest.json", JSON.stringify(manifest, null, 2));
+    files.set("mcpmint.sbom.json", renderSbom(plan));
+    files.set("mcpmint.provenance.json", renderProvenance(plan, manifest));
     files.set("server.json", renderServerJson(plan));
 
     if (plan.features.documentation) {
