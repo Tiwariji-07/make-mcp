@@ -4,7 +4,8 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ArrowRight, Loader2, Sparkles, X } from "lucide-react";
-import { Header } from "@/components/shared/header";
+import { MarketingHeader } from "@/components/shared/marketing-header";
+import { ApiMintScene } from "@/components/marketing/api-mint-scene";
 import { Button } from "@/components/ui/button";
 import { useProjectStore } from "@/store/project-store";
 import { parseOpenAPIFromContent } from "@/lib/parsers/openapi";
@@ -30,17 +31,11 @@ export default function HomePage() {
   const [isNavigating, setIsNavigating] = useState(false);
   const [isSampleLoading, setIsSampleLoading] = useState(false);
   const [isPasteParsing, setIsPasteParsing] = useState(false);
-  const [mounted, setMounted] = useState(false);
 
   // Do NOT auto-redirect when a persisted/in-memory spec exists. Persistence is
   // now on, so bouncing returning users into the editor would trap them here.
   // Instead we surface a "Continue where you left off" CTA below.
   const hasSession = Boolean(spec);
-
-  useEffect(() => {
-    const t = setTimeout(() => setMounted(true), 50);
-    return () => clearTimeout(t);
-  }, []);
 
   const handleImport = () => {
     setIsNavigating(true);
@@ -114,22 +109,18 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen relative">
-      <Header />
+      <MarketingHeader />
 
       <main className="pt-14 relative z-10">
         {/* ═══ HERO — Full viewport, asymmetric ═══ */}
-        <section className="min-h-[calc(100vh-56px)] flex">
+        <section className="flex min-h-[calc(100vh-56px)] flex-col lg:flex-row">
           {/* Left — Oversized headline */}
           <div className="flex-1 flex flex-col justify-center px-8 md:px-16 lg:px-24 py-20">
-            <div
-              className={`space-y-8 max-w-2xl transition-all duration-700 ${
-                mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-8"
-              }`}
-            >
+            <div className="hero-enter max-w-2xl space-y-8">
               {/* Status pill */}
               <div className="flex items-center gap-3 text-[11px] tracking-[0.2em] uppercase text-muted-foreground">
                 <span className="w-1.5 h-1.5 bg-primary animate-subtle-pulse" />
-                <span>v0.1.0 — beta</span>
+                <span>v0.1.0 · beta</span>
               </div>
 
               {/* Headline — stacked, oversized */}
@@ -137,19 +128,17 @@ export default function HomePage() {
                 className="text-[clamp(3rem,8vw,7rem)] font-bold leading-[0.95] tracking-[-0.03em]"
                 style={{ fontFamily: "'Clash Display', sans-serif" }}
               >
-                <span className="block">Transform</span>
-                <span className="block">your APIs</span>
+                <span className="block">Your API.</span>
                 <span className="block">
-                  into{" "}
-                  <span className="text-primary">MCP</span>
+                  Minted for <span className="text-primary">MCP.</span>
                 </span>
               </h1>
 
               {/* Description */}
-              <p className="text-sm text-muted-foreground leading-relaxed max-w-md">
-                File and paste imports stay on this device, and browser generation
-                is the privacy-first default. URL imports use a hardened server
-                fetch; optional server-side verification is clearly opt-in.
+              <p className="max-w-lg text-base leading-relaxed text-muted-foreground">
+                Turn an OpenAPI or Postman spec into a deployable MCP server.
+                Inspect every tool, trim context, run a trust scan, then download
+                TypeScript or Python without sending your file anywhere.
               </p>
 
               {/* Continue where you left off — only when a session is persisted */}
@@ -185,7 +174,7 @@ export default function HomePage() {
                     </>
                   ) : (
                     <>
-                      Start Building
+                      Mint an MCP server
                       <ArrowRight className="w-4 h-4 ml-3" />
                     </>
                   )}
@@ -205,7 +194,7 @@ export default function HomePage() {
                   ) : (
                     <>
                       <Sparkles className="w-4 h-4 mr-2 text-primary" />
-                      Try a sample API
+                      Try the Petstore spec
                     </>
                   )}
                 </Button>
@@ -237,68 +226,14 @@ export default function HomePage() {
             </div>
           </div>
 
-          {/* Right — Terminal animation */}
-          <div
-            className={`hidden lg:flex w-[45%] border-l border-border bg-surface items-center justify-center p-12 transition-all duration-700 delay-200 ${
-              mounted ? "opacity-100" : "opacity-0"
-            }`}
-          >
-            <div className="w-full max-w-lg">
-              {/* Terminal window */}
-              <div className="border border-border">
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-background">
-                  <div className="flex gap-1.5">
-                    <div className="w-2.5 h-2.5 bg-red/60" />
-                    <div className="w-2.5 h-2.5 bg-amber/60" />
-                    <div className="w-2.5 h-2.5 bg-green/60" />
-                  </div>
-                  <span className="text-[10px] text-muted-foreground tracking-[0.15em] uppercase">
-                    mcp-server.ts
-                  </span>
-                  <div className="w-12" />
-                </div>
+          {/* Mobile proof — static, compact, and below the primary action. */}
+          <div className="hero-enter hero-enter--scene px-5 pb-12 lg:hidden">
+            <ApiMintScene compact />
+          </div>
 
-                <div className="p-5 text-[13px] leading-7 bg-background/50">
-                  <div className="flex">
-                    <div className="w-8 text-right pr-4 text-muted-foreground/30 select-none text-[11px]">
-                      1<br />2<br />3<br />4<br />5<br />6<br />7<br />8<br />9
-                    </div>
-                    <div>
-                      {"// auto-generated by mcpmint"}<br />
-                      <span className="text-blue">import</span>{" {McpServer} "}<span className="text-blue">from</span>{" "}<span className="text-green">&quot;@modelcontextprotocol/sdk/server/mcp.js&quot;</span>;<br />
-                      <br />
-                      <span className="text-blue">const</span>{" server = "}<span className="text-blue">new</span>{" "}<span className="text-amber">McpServer</span>{"({"}<br />
-                      {"  name: "}<span className="text-green">&quot;petstore&quot;</span>,<br />
-                      {"  version: "}<span className="text-green">&quot;1.0.0&quot;</span>,<br />
-                      {"});"}<br />
-                      <span className="text-muted-foreground cursor-blink">server.registerTool(...)</span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Status bar */}
-                <div className="px-4 py-2 border-t border-border flex items-center justify-between text-[10px] text-muted-foreground tracking-[0.1em] uppercase">
-                  <span>TypeScript</span>
-                  <span className="text-primary">● ready</span>
-                </div>
-              </div>
-
-              {/* Output labels */}
-              <div className="mt-6 flex gap-3">
-                <div className="flex-1 border border-border p-3 text-center">
-                  <div className="text-[10px] text-muted-foreground tracking-[0.15em] uppercase mb-1">Output</div>
-                  <div className="text-sm font-semibold" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-                    TS / PY
-                  </div>
-                </div>
-                <div className="flex-1 border border-border p-3 text-center">
-                  <div className="text-[10px] text-muted-foreground tracking-[0.15em] uppercase mb-1">Transport</div>
-                  <div className="text-sm font-semibold" style={{ fontFamily: "'Clash Display', sans-serif" }}>
-                    stdio / HTTP
-                  </div>
-                </div>
-              </div>
-            </div>
+          {/* Desktop proof — the API-to-MCP transformation is the visual. */}
+          <div className="hero-enter hero-enter--scene hidden w-[48%] items-center justify-center border-l border-border bg-surface p-8 xl:p-12 lg:flex">
+            <ApiMintScene />
           </div>
         </section>
 
@@ -308,23 +243,26 @@ export default function HomePage() {
             {[
               {
                 num: "01",
-                title: "Standard Compliant",
-                desc: "Built strictly following the Model Context Protocol specification. Compatible with Claude Desktop, Zed, Cursor, and any MCP client.",
+                title: "Inspect before you expose",
+                desc: "See capability gaps, destructive operations, unsupported auth, and every generated tool before you download code.",
+                proof: ["Capability report", "Trust scan", "Request sandbox"],
               },
               {
                 num: "02",
-                title: "Zero Boilerplate",
-                desc: "We handle transport layers, error handling, input validation, and type definitions. You get a clean, deployable server codebase instantly.",
+                title: "Spend context on what matters",
+                desc: "Watch the context budget as you select tools, or collapse a large API into three compact meta-tools without losing safe dispatch.",
+                proof: ["Live token meter", "Compact mode", "Tool presets"],
               },
               {
                 num: "03",
-                title: "AI-Optimized Context",
-                desc: "Automatically extracts descriptions, schemas, and examples to create rich tool annotations that maximize LLM reasoning over your data.",
+                title: "Leave with proof, not promises",
+                desc: "Download a runnable Node.js or Python server with tests, documentation, provenance, dependency pins, and an SBOM.",
+                proof: ["TS or Python", "SBOM included", "Registry ready"],
               },
             ].map((feature, i) => (
               <div
                 key={feature.num}
-                className={`flex items-start gap-8 md:gap-16 px-8 md:px-16 lg:px-24 py-16 relative overflow-hidden ${
+                className={`relative flex flex-col items-start gap-5 overflow-hidden px-8 py-14 sm:flex-row sm:gap-10 md:gap-16 md:px-16 lg:px-24 lg:py-16 ${
                   i < 2 ? "border-b border-border" : ""
                 }`}
               >
@@ -333,14 +271,14 @@ export default function HomePage() {
 
                 {/* Number */}
                 <div
-                  className="text-5xl md:text-7xl font-bold text-primary/20 shrink-0 w-20 md:w-28"
+                  className="shrink-0 text-5xl font-bold text-primary/20 sm:w-20 md:w-28 md:text-7xl"
                   style={{ fontFamily: "'Clash Display', sans-serif" }}
                 >
                   {feature.num}
                 </div>
 
                 {/* Content */}
-                <div className="pt-2 md:pt-4 max-w-xl">
+                <div className="max-w-xl sm:pt-2 md:pt-4">
                   <h3
                     className="text-xl md:text-2xl font-semibold mb-3 tracking-tight"
                     style={{ fontFamily: "'Clash Display', sans-serif" }}
@@ -350,6 +288,13 @@ export default function HomePage() {
                   <p className="text-sm text-muted-foreground leading-relaxed">
                     {feature.desc}
                   </p>
+                  <div className="mt-5 flex flex-wrap gap-2">
+                    {feature.proof.map((item) => (
+                      <span key={item} className="border border-border bg-surface px-2.5 py-1.5 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                        {item}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               </div>
             ))}
@@ -360,7 +305,7 @@ export default function HomePage() {
         <footer className="border-t border-border px-8 md:px-16 lg:px-24 py-8">
           <div className="max-w-[1400px] mx-auto flex items-center justify-between">
             <span className="text-[11px] text-muted-foreground tracking-[0.15em] uppercase">
-              mcpmint — MIT Licensed
+              mcpmint · MIT Licensed
             </span>
             <div className="flex gap-6 text-[11px] text-muted-foreground tracking-wider">
               <a href="https://github.com/mcpmint/mcpmint" target="_blank" rel="noreferrer" className="hover:text-primary transition-colors">

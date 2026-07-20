@@ -406,23 +406,17 @@ export default function ImportPage() {
 
               <div className="text-center space-y-6">
                 {isDragActive ? (
-                  <h2
-                    className="text-6xl md:text-8xl font-bold text-primary tracking-tight"
-                    style={{ fontFamily: "'Clash Display', sans-serif" }}
-                  >
+                  <h2 className="text-6xl md:text-8xl font-bold text-primary tracking-tight">
                     DROP
                   </h2>
                 ) : (
                   <>
                     <Upload className="w-8 h-8 text-muted-foreground mx-auto" />
-                    <h2
-                      className="text-3xl md:text-4xl font-semibold tracking-tight"
-                      style={{ fontFamily: "'Clash Display', sans-serif" }}
-                    >
+                    <h2 className="text-3xl md:text-4xl font-semibold tracking-tight">
                       Drop your spec here
                     </h2>
                     <p className="text-sm text-muted-foreground max-w-md mx-auto">
-                      Swagger 2.0+ / OpenAPI 3.x / Postman v2.1 — JSON or YAML
+                      Swagger 2.0+ / OpenAPI 3.x / Postman v2.1 · JSON or YAML
                     </p>
                     <div className="flex items-center justify-center gap-3">
                       <Button
@@ -459,10 +453,7 @@ export default function ImportPage() {
           {activeTab === "url" && (
             <div className="flex-1 flex items-center justify-center px-6">
               <div className="w-full max-w-2xl space-y-6">
-                <h2
-                  className="text-2xl font-semibold tracking-tight"
-                  style={{ fontFamily: "'Clash Display', sans-serif" }}
-                >
+                <h2 className="text-2xl font-semibold tracking-tight">
                   Import from URL
                 </h2>
                 <div className="flex gap-3">
@@ -488,7 +479,7 @@ export default function ImportPage() {
                   </Button>
                 </div>
                 <p className="text-[11px] text-muted-foreground tracking-wider">
-                  OpenAPI, Swagger or Postman — fetched securely server-side to avoid CORS.
+                  OpenAPI, Swagger or Postman; fetched securely server-side to avoid CORS.
                   Press <kbd className="px-1.5 py-0.5 border border-border bg-background text-[10px]">Enter</kbd> to import.
                 </p>
               </div>
@@ -499,10 +490,7 @@ export default function ImportPage() {
           {activeTab === "paste" && (
             <div className="flex-1 flex flex-col max-w-[1400px] mx-auto w-full px-6 py-8">
               <div className="flex items-center justify-between mb-4">
-                <h2
-                  className="text-2xl font-semibold tracking-tight"
-                  style={{ fontFamily: "'Clash Display', sans-serif" }}
-                >
+                <h2 className="text-2xl font-semibold tracking-tight">
                   Paste content
                 </h2>
                 <Button

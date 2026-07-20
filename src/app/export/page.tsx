@@ -20,6 +20,7 @@ import {
   Github,
   Lock,
   Settings2,
+  ChevronDown,
 } from "lucide-react";
 import Link from "next/link";
 import { Header } from "@/components/shared/header";
@@ -736,7 +737,10 @@ export default function ExportPage() {
                 )}
               </Section>
 
-              <Section title="MCP Server Access">
+              <ResponsiveDisclosure
+                title="MCP Server Access"
+                description="Control authentication and browser origin policy"
+              >
                 {serverConfig.transport === "stdio" ? (
                   <div className="border border-border px-4 py-3 text-xs text-muted-foreground leading-relaxed">
                     MCP server access auth is not applicable for stdio because the client talks to the server over local process stdin/stdout. Keep stdio for local-only use.
@@ -792,7 +796,7 @@ export default function ExportPage() {
                     )}
                   </div>
                 )}
-              </Section>
+              </ResponsiveDisclosure>
 
               <Section title="Generation">
                 <div className="space-y-3">
@@ -824,16 +828,22 @@ export default function ExportPage() {
                 </div>
               </Section>
 
-              <Section title="Trust Scan">
+              <ResponsiveDisclosure
+                title="Trust Scan"
+                description="Review permissions and acknowledge risk before download"
+              >
                 <TrustScanPanel
                   report={trustReport}
                   riskAccepted={riskAccepted}
                   onRiskAcceptedChange={(accepted) => setAcceptedRiskSignature(accepted ? trustSignature : null)}
                   onDownloadAttestation={() => { void handleDownloadAttestation(); }}
                 />
-              </Section>
+              </ResponsiveDisclosure>
 
-              <Section title="Test before download">
+              <ResponsiveDisclosure
+                title="Test before download"
+                description="Inspect, mock, or execute one selected tool"
+              >
                 <details className="border border-border bg-surface">
                   <summary className="min-h-11 cursor-pointer list-none px-4 py-3 text-xs font-semibold text-foreground focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2">
                     Open request sandbox
@@ -843,9 +853,12 @@ export default function ExportPage() {
                     <RequestSandbox tools={generationPlan.tools} baseUrl={spec.baseUrl} authConfig={authConfig} />
                   </div>
                 </details>
-              </Section>
+              </ResponsiveDisclosure>
 
-              <Section title="Supply chain">
+              <ResponsiveDisclosure
+                title="Supply chain"
+                description="Inspect the provenance and dependency artifacts in the archive"
+              >
                 <div className="border border-border bg-surface px-4 py-3">
                   <div className="flex items-start gap-3">
                     <ShieldCheck className="mt-0.5 size-4 shrink-0 text-primary" />
@@ -864,7 +877,7 @@ export default function ExportPage() {
                     </div>
                   </div>
                 </div>
-              </Section>
+              </ResponsiveDisclosure>
 
               <Section title="Export Readiness">
                 <div className="grid gap-3">
@@ -1088,7 +1101,7 @@ export default function ExportPage() {
             <Lock className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
             {browserMode ? (
               <p>
-                Privacy mode is on. Your spec is processed entirely in your browser to generate the code and build the zip &mdash; it is never sent to any server. Nothing is uploaded, stored, or shared.
+                Privacy mode is on. Your spec is processed entirely in your browser to generate the code and build the zip; it is never sent to any server. Nothing is uploaded, stored, or shared.
               </p>
             ) : (
               <p>
@@ -1153,14 +1166,37 @@ export default function ExportPage() {
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="py-8 border-b-2 border-primary/20">
-      <h2
-        className="text-lg font-semibold tracking-tight mb-5"
-        style={{ fontFamily: "'Clash Display', sans-serif" }}
-      >
+      <h2 className="text-lg font-semibold tracking-tight mb-5">
         {title}
       </h2>
       {children}
     </div>
+  );
+}
+
+function ResponsiveDisclosure({
+  title,
+  description,
+  children,
+}: {
+  title: string;
+  description: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <details className="progressive-section border-b-2 border-primary/20">
+      <summary className="flex min-h-20 cursor-pointer list-none items-center justify-between gap-4 py-5 focus-visible:outline-2 focus-visible:outline-primary focus-visible:outline-offset-2 lg:hidden">
+        <span>
+          <span className="block text-base font-semibold text-foreground">{title}</span>
+          <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">{description}</span>
+        </span>
+        <ChevronDown aria-hidden="true" className="size-4 shrink-0 text-primary transition-transform duration-200" />
+      </summary>
+      <div className="progressive-section__body py-8">
+        <h2 className="mb-5 hidden text-lg font-semibold tracking-tight lg:block">{title}</h2>
+        {children}
+      </div>
+    </details>
   );
 }
 
@@ -1224,10 +1260,7 @@ function LangCard({
       >
         {tag}
       </div>
-      <div
-        className="text-base font-semibold tracking-tight"
-        style={{ fontFamily: "'Clash Display', sans-serif" }}
-      >
+      <div className="text-base font-semibold tracking-tight">
         {label}
       </div>
     </button>
@@ -1384,10 +1417,7 @@ function SuccessView({
           <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-primary/10 text-primary">
             <PartyPopper className="w-7 h-7" />
           </div>
-          <h1
-            className="text-3xl font-semibold tracking-tight"
-            style={{ fontFamily: "'Clash Display', sans-serif" }}
-          >
+          <h1 className="text-3xl font-semibold tracking-tight">
             Your MCP server is ready
           </h1>
           <p className="text-sm text-muted-foreground">
@@ -1409,7 +1439,7 @@ function SuccessView({
             <p className="text-[11px] text-muted-foreground leading-relaxed max-w-lg mx-auto">
               Compact mode is on: the server exposes <InlineCode>list_api_endpoints</InlineCode>,{" "}
               <InlineCode>get_api_endpoint_schema</InlineCode>, and{" "}
-              <InlineCode>invoke_api_endpoint</InlineCode> — the model discovers and calls your{" "}
+              <InlineCode>invoke_api_endpoint</InlineCode>; the model discovers and calls your{" "}
               {snapshot.toolCount} endpoint{snapshot.toolCount === 1 ? "" : "s"} on demand instead of
               loading them all into context.
             </p>
@@ -1420,7 +1450,7 @@ function SuccessView({
         <section className="space-y-4">
           <div className="flex items-center gap-2">
             <Settings2 className="w-4 h-4 text-primary" />
-            <h2 className="text-lg font-semibold tracking-tight" style={{ fontFamily: "'Clash Display', sans-serif" }}>
+            <h2 className="text-lg font-semibold tracking-tight">
               Install and verify
             </h2>
           </div>

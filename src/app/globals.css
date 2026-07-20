@@ -6,7 +6,7 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-clash);
+  --font-sans: var(--font-ui);
   --font-mono: var(--font-fira);
   --color-sidebar-ring: var(--sidebar-ring);
   --color-sidebar-border: var(--sidebar-border);
@@ -61,6 +61,7 @@
 
 :root {
   --radius: 0px;
+  --font-ui: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 
   /* ── Base ── */
   --background: #0C0C0C;
@@ -181,7 +182,15 @@
 
   body {
     @apply bg-background text-foreground antialiased;
+    font-family: var(--font-ui);
     font-feature-settings: "liga" 1, "calt" 1;
+  }
+
+  code,
+  pre,
+  kbd,
+  samp {
+    font-family: var(--font-fira), monospace;
   }
 
   ::selection {
@@ -240,30 +249,349 @@
     background: rgba(71, 255, 178, 0.12);
     color: #47FFB2;
     border: 1px solid rgba(71, 255, 178, 0.25);
+    font-family: var(--font-fira), monospace;
   }
 
   .method-post {
     background: rgba(71, 181, 255, 0.12);
     color: #47B5FF;
     border: 1px solid rgba(71, 181, 255, 0.25);
+    font-family: var(--font-fira), monospace;
   }
 
   .method-put {
     background: rgba(255, 170, 44, 0.12);
     color: #FFAA2C;
     border: 1px solid rgba(255, 170, 44, 0.25);
+    font-family: var(--font-fira), monospace;
   }
 
   .method-patch {
     background: rgba(255, 170, 44, 0.12);
     color: #FFAA2C;
     border: 1px solid rgba(255, 170, 44, 0.25);
+    font-family: var(--font-fira), monospace;
   }
 
   .method-delete {
     background: rgba(255, 77, 77, 0.12);
     color: #FF4D4D;
     border: 1px solid rgba(255, 77, 77, 0.25);
+    font-family: var(--font-fira), monospace;
+  }
+
+  /* ── API minting rig ── */
+  .mint-scene {
+    width: 100%;
+    max-width: 600px;
+    overflow: hidden;
+    border: 1px solid var(--border);
+    background: var(--background);
+    font-family: var(--font-fira), monospace;
+  }
+
+  .mint-scene__header,
+  .mint-scene__readout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    color: var(--muted-foreground);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+
+  .mint-scene__header {
+    min-height: 42px;
+    padding: 0 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .mint-scene__status {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    color: var(--primary);
+  }
+
+  .mint-scene__status > span {
+    width: 5px;
+    height: 5px;
+    background: currentColor;
+    animation: subtle-pulse 2s ease-in-out infinite;
+  }
+
+  .mint-scene__viewport {
+    position: relative;
+    aspect-ratio: 1.35;
+    min-height: 320px;
+    overflow: hidden;
+    background-color: var(--surface);
+    background-image:
+      linear-gradient(color-mix(in oklab, var(--foreground) 4%, transparent) 1px, transparent 1px),
+      linear-gradient(90deg, color-mix(in oklab, var(--foreground) 4%, transparent) 1px, transparent 1px);
+    background-size: 28px 28px;
+  }
+
+  .mint-scene__viewport::after {
+    content: "SPEC → INSPECT → GENERATE";
+    position: absolute;
+    right: 14px;
+    bottom: 12px;
+    color: color-mix(in oklab, var(--foreground) 32%, transparent);
+    font-size: 9px;
+    letter-spacing: 0.18em;
+  }
+
+  .mint-rig {
+    position: absolute;
+    top: 48%;
+    left: 50%;
+    width: 720px;
+    height: 360px;
+    transform: translate(-50%, -50%) rotateX(54deg) rotateZ(-27deg) scale(0.76);
+    transform-style: preserve-3d;
+    transition: transform 600ms cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  .mint-scene:hover .mint-rig {
+    transform: translate(-50%, -52%) rotateX(51deg) rotateZ(-24deg) scale(0.78);
+  }
+
+  .mint-slab,
+  .mint-tool,
+  .mint-core {
+    transform-style: preserve-3d;
+  }
+
+  .mint-spec {
+    position: absolute;
+    top: 80px;
+    left: 18px;
+    width: 180px;
+    height: 190px;
+    padding: 18px;
+    border: 1px solid color-mix(in oklab, var(--primary) 65%, var(--border));
+    background: var(--background);
+    transform: translateZ(20px);
+  }
+
+  .mint-spec::before,
+  .mint-spec::after,
+  .mint-tool::after {
+    content: "";
+    position: absolute;
+    background: color-mix(in oklab, var(--primary) 10%, var(--surface));
+    border: 1px solid color-mix(in oklab, var(--primary) 35%, var(--border));
+  }
+
+  .mint-spec::before {
+    top: 7px;
+    right: -11px;
+    width: 10px;
+    height: calc(100% - 5px);
+    transform: skewY(45deg);
+  }
+
+  .mint-spec::after {
+    right: -5px;
+    bottom: -11px;
+    width: calc(100% - 4px);
+    height: 10px;
+    transform: skewX(45deg);
+  }
+
+  .mint-spec__label,
+  .mint-spec__count {
+    color: var(--primary);
+    font-size: 10px;
+    letter-spacing: 0.12em;
+  }
+
+  .mint-spec__title {
+    margin-top: 14px;
+    color: var(--foreground);
+    font-size: 15px;
+    font-weight: 650;
+  }
+
+  .mint-spec__lines {
+    display: grid;
+    gap: 9px;
+    margin-top: 18px;
+  }
+
+  .mint-spec__lines i {
+    display: block;
+    height: 5px;
+    background: var(--border);
+  }
+
+  .mint-spec__lines i:nth-child(2) { width: 74%; }
+  .mint-spec__lines i:nth-child(3) { width: 86%; }
+  .mint-spec__lines i:nth-child(4) { width: 58%; }
+  .mint-spec__count { margin-top: 18px; color: var(--muted-foreground); }
+
+  .mint-conveyor {
+    position: absolute;
+    top: 171px;
+    height: 14px;
+    overflow: hidden;
+    border-top: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    transform: translateZ(11px);
+  }
+
+  .mint-conveyor--in { left: 205px; width: 118px; }
+  .mint-conveyor--out { left: 414px; width: 80px; }
+
+  .mint-conveyor span {
+    display: block;
+    width: 34px;
+    height: 100%;
+    background: var(--primary);
+    animation: mint-flow 2.6s linear infinite;
+  }
+
+  .mint-core {
+    position: absolute;
+    top: 132px;
+    left: 326px;
+    width: 88px;
+    height: 88px;
+    transform: translateZ(34px);
+  }
+
+  .mint-core__face,
+  .mint-core__top,
+  .mint-core__side {
+    position: absolute;
+    display: grid;
+    border: 1px solid var(--primary);
+    background: var(--primary);
+  }
+
+  .mint-core__face {
+    inset: 0;
+    place-items: center;
+    color: var(--primary-foreground);
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+  }
+
+  .mint-core__top {
+    top: -15px;
+    left: 7px;
+    width: 88px;
+    height: 15px;
+    transform: skewX(-45deg);
+    background: color-mix(in oklab, var(--primary) 78%, var(--background));
+  }
+
+  .mint-core__side {
+    top: -7px;
+    right: -15px;
+    width: 15px;
+    height: 88px;
+    transform: skewY(-45deg);
+    background: color-mix(in oklab, var(--primary) 55%, var(--background));
+  }
+
+  .mint-tools {
+    position: absolute;
+    top: 93px;
+    left: 500px;
+    display: grid;
+    grid-template-columns: repeat(2, 112px);
+    gap: 12px;
+    transform-style: preserve-3d;
+  }
+
+  .mint-tool {
+    position: relative;
+    min-height: 64px;
+    padding: 11px;
+    border: 1px solid var(--border);
+    background: var(--background);
+    transform: translateZ(18px);
+    animation: mint-extrude 5s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+    animation-delay: calc(var(--tool-index) * 180ms);
+  }
+
+  .mint-tool::after {
+    right: -7px;
+    bottom: -7px;
+    width: calc(100% - 1px);
+    height: 6px;
+    transform: skewX(45deg);
+  }
+
+  .mint-tool span {
+    display: block;
+    margin-bottom: 8px;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+
+  .mint-tool code { color: var(--foreground); font-size: 10px; }
+  .mint-tool--green span { color: var(--green); }
+  .mint-tool--blue span { color: var(--blue); }
+  .mint-tool--amber span { color: var(--amber); }
+  .mint-tool--red span { color: var(--red); }
+
+  .mint-scene__readout {
+    min-height: 52px;
+    padding: 0 16px;
+    border-top: 1px solid var(--border);
+    letter-spacing: 0.06em;
+  }
+
+  .mint-scene__readout b { color: var(--primary); font-weight: 650; }
+
+  .mint-scene--compact .mint-scene__viewport {
+    min-height: 250px;
+  }
+
+  .mint-scene--compact .mint-rig {
+    transform: translate(-50%, -50%) rotateX(54deg) rotateZ(-27deg) scale(0.54);
+  }
+
+  .mint-scene--compact:hover .mint-rig {
+    transform: translate(-50%, -52%) rotateX(52deg) rotateZ(-25deg) scale(0.55);
+  }
+
+  .mint-scene--compact .mint-scene__readout {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    padding-block: 12px;
+  }
+
+  @keyframes mint-flow {
+    from { transform: translateX(-36px); }
+    to { transform: translateX(118px); }
+  }
+
+  @keyframes mint-extrude {
+    0%, 24%, 100% { transform: translateZ(18px); }
+    44%, 62% { transform: translateZ(32px); }
+  }
+
+  /* ── Mobile progressive disclosure ── */
+  .progressive-section:not([open]) > .progressive-section__body {
+    display: none;
+  }
+
+  .progressive-section[open] > summary svg {
+    transform: rotate(180deg);
+  }
+
+  @media (min-width: 64rem) {
+    .progressive-section > .progressive-section__body {
+      display: block !important;
+    }
   }
 
   /* ── Scrollbar — minimal ── */
@@ -311,6 +639,26 @@
    UTILITIES
    ═══════════════════════════════════════════════════════ */
 @layer utilities {
+
+  /* ── Homepage entrance — CSS-only, visible without client hydration ── */
+  .hero-enter {
+    animation: hero-enter 700ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+
+  .hero-enter--scene {
+    animation-delay: 120ms;
+  }
+
+  @keyframes hero-enter {
+    from {
+      opacity: 0;
+      transform: translateY(22px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
 
   /* ── Accent text ── */
   .text-gradient {

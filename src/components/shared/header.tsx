@@ -103,10 +103,7 @@ export function Header() {
         <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
           <DialogContent showCloseButton={false}>
             <DialogHeader>
-              <DialogTitle
-                style={{ fontFamily: "'Clash Display', sans-serif" }}
-                className="tracking-tight"
-              >
+              <DialogTitle className="tracking-tight">
                 Start over?
               </DialogTitle>
               <DialogDescription>
