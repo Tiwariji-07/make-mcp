@@ -1461,10 +1461,10 @@ export function generateNodeProject(plan: GenerationPlan): GeneratedProject {
         dependencies: {
             "@modelcontextprotocol/sdk": NODE_MCP_SDK_VERSION,
             dotenv: "16.4.7",
-            zod: "3.22.0",
+            zod: "3.25.76",
         },
         devDependencies: {
-            "@types/node": "20.0.0",
+            "@types/node": "20.19.43",
             tsx: "4.7.0",
             typescript: "5.3.3",
         },
