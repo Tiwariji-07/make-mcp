@@ -2,7 +2,7 @@ import { ImageResponse } from "next/og";
 
 // Image metadata
 export const alt =
-  "mcpmint — Generate MCP Servers in Your Browser. Your spec never leaves your machine.";
+  "mcpmint — Privacy-first MCP server generation from OpenAPI and Postman specs.";
 export const size = {
   width: 1200,
   height: 630,
@@ -82,8 +82,8 @@ export default function OpengraphImage() {
               lineHeight: 1.3,
             }}
           >
-            Generate MCP servers in your browser — your spec never leaves your
-            machine.
+            Generate MCP servers from OpenAPI and Postman specs with
+            privacy-first browser generation.
           </div>
         </div>
 

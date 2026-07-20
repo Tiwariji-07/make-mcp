@@ -1114,6 +1114,8 @@ test("postman -> node preview preserves path and headers", () => {
     assert.match(operationsFile, /path = path\.replace\("\{orderId\}", serializePathParameter\("orderId", args\["order_id"\]/);
     assert.match(operationsFile, /requestHeaders\["X-Trace-Id"\] = serializeParameterValue\("X-Trace-Id", args\["x_trace_id"\]/);
     assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"command": "node"/);
+    assert.match(readmeFile, /\/absolute\/path\/to\/orders-mcp\/dist\/src\/index\.js/);
+    assert.doesNotMatch(readmeFile, /"args": \[\s*"dist\/src\/index\.js"/);
     assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"API_BASE_URL": "https:\/\/postman\.example\.com"/);
     assert.match(readmeFile, /## Example MCP Client Config[\s\S]*"BEARER_TOKEN": "your_token_here"/);
 });

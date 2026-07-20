@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import { getBodyContentKind, isBinarySchema, isShallowSimpleObjectSchema } from "@/lib/generator/utils";
+import { projectStorageKey, upsertProjectHistory } from "./project-history";
 
 // Parsed API spec types now live in the lib layer (api-model). Re-exported here
 // so existing store consumers keep importing them from the store unchanged.
@@ -139,8 +140,8 @@ export interface ProjectState {
     setExportConfig: (config: ExportConfigUpdate) => void;
 
     // Project history actions
-    saveCurrentProject: () => void;
-    loadProject: (id: string) => void;
+    saveCurrentProject: () => boolean;
+    loadProject: (id: string) => boolean;
     deleteProject: (id: string) => void;
     clearSavedProjects: () => void;
 
@@ -583,10 +584,14 @@ export const useProjectStore = create<ProjectState>()(
 
             saveCurrentProject: () => {
                 const state = get();
-                if (!state.spec) return;
+                if (!state.spec) return false;
+
+                const existing = state.savedProjects.find(
+                    (candidate) => candidate.source === (state.specSource || "unknown")
+                );
 
                 const project: SavedProject = {
-                    id: generateId(),
+                    id: existing?.id || generateId(),
                     name: state.spec.info.title,
                     source: state.specSource || "unknown",
                     format: state.specFormat || "openapi",
@@ -599,7 +604,7 @@ export const useProjectStore = create<ProjectState>()(
                 // existing users' saved projects survive the mcpmint rebrand.
                 try {
                     localStorage.setItem(
-                        `makemcp-project-${project.id}`,
+                        projectStorageKey(project.id),
                         JSON.stringify({
                             spec: state.spec,
                             tools: state.tools,
@@ -611,18 +616,29 @@ export const useProjectStore = create<ProjectState>()(
                     );
                 } catch (e) {
                     console.error("Failed to save project:", e);
-                    return;
+                    set({ error: "Your download succeeded, but this project could not be saved to browser history. Check private-browsing or storage settings." });
+                    return false;
                 }
 
-                set((state) => ({
-                    savedProjects: [project, ...state.savedProjects].slice(0, 10), // Keep last 10
-                }));
+                const update = upsertProjectHistory(state.savedProjects, project);
+                for (const evicted of update.evicted) {
+                    try {
+                        localStorage.removeItem(projectStorageKey(evicted.id));
+                    } catch (e) {
+                        console.warn("Failed to remove evicted project data:", e);
+                    }
+                }
+                set({ savedProjects: update.projects, error: null });
+                return true;
             },
 
             loadProject: (id) => {
                 try {
-                    const data = localStorage.getItem(`makemcp-project-${id}`);
-                    if (!data) return;
+                    const data = localStorage.getItem(projectStorageKey(id));
+                    if (!data) {
+                        set({ error: "This saved project is no longer available. It may have been cleared by the browser." });
+                        return false;
+                    }
 
                     const { spec, tools, authConfig, mcpServerAuthConfig, serverConfig, exportConfig } = JSON.parse(data);
 
@@ -630,7 +646,7 @@ export const useProjectStore = create<ProjectState>()(
                     // spec.apiModel, which generation now requires.
                     if (!spec?.apiModel) {
                         set({ error: "This saved project was created by an older version of mcpmint. Re-import the spec to continue." });
-                        return;
+                        return false;
                     }
 
                     set({
@@ -645,14 +661,17 @@ export const useProjectStore = create<ProjectState>()(
                         currentStep: "editor",
                         error: null,
                     });
+                    return true;
                 } catch (e) {
                     console.error("Failed to load project:", e);
+                    set({ error: "This saved project is damaged or unreadable. Re-import the original specification." });
+                    return false;
                 }
             },
 
             deleteProject: (id) => {
                 try {
-                    localStorage.removeItem(`makemcp-project-${id}`);
+                    localStorage.removeItem(projectStorageKey(id));
                 } catch (e) {
                     console.error("Failed to delete project:", e);
                 }
@@ -662,17 +681,20 @@ export const useProjectStore = create<ProjectState>()(
             },
 
             clearSavedProjects: () => {
-                const savedProjects = get().savedProjects;
-
-                for (const project of savedProjects) {
-                    try {
-                        localStorage.removeItem(`makemcp-project-${project.id}`);
-                    } catch (e) {
-                        console.error("Failed to delete project:", e);
+                try {
+                    const keys: string[] = [];
+                    for (let index = 0; index < localStorage.length; index += 1) {
+                        const key = localStorage.key(index);
+                        if (key?.startsWith("makemcp-project-")) keys.push(key);
                     }
+                    for (const key of keys) localStorage.removeItem(key);
+                } catch (e) {
+                    console.error("Failed to clear project history:", e);
+                    set({ error: "Project history could not be fully cleared. Check your browser storage settings." });
+                    return;
                 }
 
-                set({ savedProjects: [] });
+                set({ savedProjects: [], error: null });
             },
 
             setLoading: (isLoading) => set({ isLoading }),

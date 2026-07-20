@@ -20,7 +20,7 @@ export const metadata: Metadata = {
     default: "mcpmint — Generate MCP Servers in Your Browser",
     template: "%s | mcpmint",
   },
-  description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
+  description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
   keywords: [
     "MCP",
     "Model Context Protocol",
@@ -44,14 +44,14 @@ export const metadata: Metadata = {
     url: SITE_URL,
     siteName: "mcpmint",
     title: "mcpmint — Generate MCP Servers in Your Browser",
-    description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
+    description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
     // Social card image is generated dynamically via src/app/opengraph-image.tsx
     // (Next.js auto-wires the file-based convention).
   },
   twitter: {
     card: "summary_large_image",
     title: "mcpmint — Generate MCP Servers in Your Browser",
-    description: "Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.",
+    description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
     // Twitter card image is generated dynamically via src/app/twitter-image.tsx.
   },
   robots: {

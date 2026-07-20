@@ -1,5 +1,6 @@
 import type { GenerationPlan } from "./types.ts";
 import { collectAuthSchemes } from "./strategies/auth.ts";
+import { joinProjectPath, renderMcpClientConfig } from "./client-config.ts";
 
 export interface ReadmeRuntimeDetails {
     installCommand: string;
@@ -149,32 +150,31 @@ function getClientConfigEnv(plan: GenerationPlan): Record<string, string> {
 }
 
 function renderClientConfig(plan: GenerationPlan, runtime: ReadmeRuntimeDetails): string {
-    const serverKey = plan.server.name;
-
     if (plan.runtime.transport === "stdio") {
-        return JSON.stringify({
-            mcpServers: {
-                [serverKey]: {
-                    command: runtime.stdioClientCommand,
-                    args: runtime.stdioClientArgs,
-                    env: getClientConfigEnv(plan),
-                },
-            },
-        }, null, 2);
+        const projectDirectory = `/absolute/path/to/${plan.server.name}`;
+        return renderMcpClientConfig({
+            serverName: plan.server.name,
+            transport: "stdio",
+            stdioCommand: runtime.stdioClientCommand,
+            stdioArgs: runtime.stdioClientArgs.map((argument) =>
+                argument.startsWith("-") || argument.startsWith("/")
+                    ? argument
+                    : joinProjectPath(projectDirectory, argument)
+            ),
+            env: getClientConfigEnv(plan),
+        });
     }
 
-    return JSON.stringify({
-        mcpServers: {
-            [serverKey]: {
-                url: getTransportUrl(plan),
-            },
-        },
-    }, null, 2);
+    return renderMcpClientConfig({
+        serverName: plan.server.name,
+        transport: plan.runtime.transport,
+        transportUrl: getTransportUrl(plan),
+    });
 }
 
 function getClientConfigNote(plan: GenerationPlan): string {
     if (plan.runtime.transport === "stdio") {
-        return "Client configuration formats vary by MCP client. Use this as a starting point:";
+        return `Client configuration formats vary by MCP client. Replace \`/absolute/path/to/${plan.server.name}\` with the absolute path where you extracted this project before using the config:`;
     }
 
     return "Client configuration formats vary by MCP client. Use this as a starting point, and configure `.env` on the server process where this MCP server runs:";

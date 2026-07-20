@@ -28,6 +28,7 @@ import {
 import { useDropzone } from "react-dropzone";
 
 type ImportTab = "file" | "url" | "paste";
+const MAX_LOCAL_SPEC_BYTES = 5 * 1024 * 1024;
 
 export default function ImportPage() {
   const router = useRouter();
@@ -82,6 +83,10 @@ export default function ImportPage() {
   const onDrop = async (acceptedFiles: File[]) => {
     if (acceptedFiles.length === 0) return;
     const file = acceptedFiles[0];
+    if (file.size > MAX_LOCAL_SPEC_BYTES) {
+      setError("This specification is larger than 5 MB. Split or reduce it before importing to keep browser generation responsive.");
+      return;
+    }
     setIsFileParsing(true);
     setLoading(true);
     setError(null);
@@ -105,7 +110,16 @@ export default function ImportPage() {
       "text/x-yaml": [".yaml", ".yml"],
     },
     maxFiles: 1,
+    maxSize: MAX_LOCAL_SPEC_BYTES,
     noClick: false,
+    onDropRejected: (rejections) => {
+      const tooLarge = rejections.some((rejection) =>
+        rejection.errors.some((candidate) => candidate.code === "file-too-large")
+      );
+      setError(tooLarge
+        ? "This specification is larger than 5 MB. Split or reduce it before importing."
+        : "Choose one OpenAPI, Swagger, or Postman JSON/YAML file.");
+    },
   });
 
   const handleUrlFetch = async () => {
@@ -125,6 +139,10 @@ export default function ImportPage() {
 
   const handlePasteParse = async () => {
     if (!pastedContent.trim()) return;
+    if (new TextEncoder().encode(pastedContent).byteLength > MAX_LOCAL_SPEC_BYTES) {
+      setError("Pasted specifications are limited to 5 MB to keep browser generation responsive.");
+      return;
+    }
     setIsPasteParsing(true);
     setLoading(true);
     setError(null);
@@ -139,6 +157,16 @@ export default function ImportPage() {
   };
 
   const isProcessing = isFileParsing || isUrlFetching || isPasteParsing;
+
+  const handleLoadProject = (id: string) => {
+    if (loadProject(id)) router.push("/editor");
+  };
+
+  const handleClearHistory = () => {
+    if (window.confirm("Clear every saved project from this browser? This cannot be undone.")) {
+      clearSavedProjects();
+    }
+  };
 
   return (
     <div className="min-h-screen relative">
@@ -203,7 +231,7 @@ export default function ImportPage() {
                 {savedProjects.map((project) => (
                   <button
                     key={project.id}
-                    onClick={() => loadProject(project.id)}
+                    onClick={() => handleLoadProject(project.id)}
                     className="shrink-0 flex items-center gap-3 px-4 py-3 border border-border hover:border-primary/30 bg-background transition-colors group"
                   >
                     <div className="text-left">
@@ -216,7 +244,7 @@ export default function ImportPage() {
                   </button>
                 ))}
                 <button
-                  onClick={clearSavedProjects}
+                  onClick={handleClearHistory}
                   className="shrink-0 px-3 py-3 text-[10px] text-muted-foreground hover:text-red tracking-wider uppercase transition-colors"
                 >
                   Clear All
@@ -237,7 +265,7 @@ export default function ImportPage() {
                 ${isDragActive ? "bg-primary/[0.03]" : ""}
               `}
             >
-              <input {...getInputProps()} />
+              <input {...getInputProps({ "aria-label": "Choose an OpenAPI, Swagger, or Postman specification file" })} />
 
               {/* Corner brackets on drag */}
               {isDragActive && (
@@ -314,6 +342,8 @@ export default function ImportPage() {
                   <div className="relative flex-1">
                     <LinkIcon className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
                     <Input
+                      id="spec-url"
+                      aria-label="Specification URL"
                       value={specUrl}
                       onChange={(e) => setSpecUrl(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && handleUrlFetch()}
@@ -367,6 +397,8 @@ export default function ImportPage() {
                 </Button>
               </div>
               <Textarea
+                id="pasted-specification"
+                aria-label="Pasted API specification"
                 value={pastedContent}
                 onChange={(e) => setPastedContent(e.target.value)}
                 placeholder={'{"openapi":"3.0.0","info":{"title":"My API"}, ...}'}
@@ -378,12 +410,12 @@ export default function ImportPage() {
 
         {/* Error bar */}
         {error && (
-          <div className="fixed bottom-0 left-0 right-0 bg-red/10 border-t-2 border-red px-6 py-3 flex items-center justify-between z-30">
+          <div role="alert" className="fixed bottom-0 left-0 right-0 bg-red/10 border-t-2 border-red px-6 py-3 flex items-center justify-between z-30">
             <span className="text-sm text-red">
               <span className="font-bold tracking-wider uppercase">Error: </span>
               {error}
             </span>
-            <button onClick={() => setError(null)} className="text-red hover:text-foreground">
+            <button aria-label="Dismiss error" onClick={() => setError(null)} className="text-red hover:text-foreground">
               <X className="w-4 h-4" />
             </button>
           </div>

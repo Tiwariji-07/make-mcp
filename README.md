@@ -4,7 +4,7 @@
 
 **Generate MCP servers in your browser**
 
-Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec never leaves your machine, and a token meter keeps servers lean. Free and open source.
+Generate MCP servers in your browser from OpenAPI and Postman specs. File/paste imports and browser generation stay on your device by default, and a token meter keeps servers lean. Free and open source.
 
 [![Next.js](https://img.shields.io/badge/Next.js-16-black?style=flat-square&logo=next.js)](https://nextjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
@@ -20,7 +20,7 @@ Generate MCP servers in your browser from OpenAPI and Postman specs. Your spec n
 - **Visual endpoint selection** — Choose which endpoints to expose as MCP tools.
 - **Tool configuration** — Edit tool names, descriptions, and parameter details, with import-time validation warnings and per-endpoint review badges surfaced in the editor.
 - 🪄 **Compact mode (meta-tools)** — For large APIs, emit just 3 meta-tools (`list_api_endpoints` / `get_api_endpoint_schema` / `invoke_api_endpoint`) instead of one tool per endpoint, keeping tool definitions from ballooning the model's context window. A live context-budget token meter shows the cost either way.
-- 🔒 **Client-side generation** — Generation and zipping run entirely in your browser by default (via fflate), so your spec never leaves your machine. A server-side path is also available when you want full verification.
+- 🔒 **Client-side generation** — File/paste imports, generation, and zipping run entirely in your browser by default (via fflate). URL imports use a hardened server fetch, and a clearly labeled server-side generation path is available when you want full verification.
 - **Multi-language export** — Generate Node.js (TypeScript) or Python (FastMCP) servers targeting MCP spec 2025-11-25.
 - **Ready-to-run code** — Download a complete, deployable MCP server as a zip, then copy paste-ready client configs from the success screen.
 - **Session persistence** — Your in-progress import, selection, and configuration survive a page refresh.
@@ -46,7 +46,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 1. **Import** — Upload an OpenAPI/Swagger or Postman spec (JSON/YAML), paste it, or enter a URL (fetched server-side to bypass CORS). Try the built-in sample if you just want a look.
 2. **Select** — Choose which endpoints to convert into MCP tools. Watch the context-budget meter, or flip on **compact mode** so a large API collapses into 3 meta-tools.
 3. **Configure** — Edit tool names, descriptions, and parameters for better LLM understanding; review any validation warnings.
-4. **Export** — Generate a complete MCP server in Node.js or Python. Generation runs in your browser by default (spec never leaves the page); opt into server-side generation for full verification. Then copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI.
+4. **Export** — Generate a complete MCP server in Node.js or Python. Generation stays in your browser by default; opt into server-side generation for full verification. Then provide the extracted project&rsquo;s absolute path and copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI.
 
 ## 🛠️ Tech Stack
 
