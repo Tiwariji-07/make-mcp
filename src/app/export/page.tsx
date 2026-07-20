@@ -16,7 +16,6 @@ import {
   Cpu,
   FileText,
   ShieldCheck,
-  XCircle,
   PartyPopper,
   Github,
   Lock,
@@ -52,12 +51,6 @@ interface PreviewFile {
   content: string;
 }
 
-interface PreviewCheck {
-  name: string;
-  status: "passed" | "failed" | "skipped";
-  details?: string;
-}
-
 interface PreviewData {
   files: PreviewFile[];
   manifest?: {
@@ -78,11 +71,6 @@ interface PreviewData {
     errors: PreviewIssue[];
     warnings: PreviewIssue[];
     info: PreviewIssue[];
-  };
-  verification?: {
-    status: "passed" | "failed";
-    mode: "fast" | "full";
-    checks: PreviewCheck[];
   };
 }
 
@@ -361,8 +349,8 @@ export default function ExportPage() {
   const [portValue, setPortValue] = useState(serverConfig.port.toString());
   const [generated, setGenerated] = useState<GeneratedSnapshot | null>(null);
   // Privacy mode: generate entirely in the browser so the spec never leaves the
-  // machine. Default ON. Switching off uses the server route, which is required
-  // for full install/build verification (impossible in-browser).
+  // machine. Default ON. Switching off uses the server route for generation,
+  // but process-spawning verification remains a local CLI-only operation.
   const [browserMode, setBrowserMode] = useState(true);
 
   useEffect(() => {
@@ -404,7 +392,11 @@ export default function ExportPage() {
     serverConfig,
     authConfig,
     mcpServerAuthConfig,
-    exportConfig,
+    exportConfig: {
+      ...exportConfig,
+      verificationMode: "fast" as const,
+      features: { ...exportConfig.features, verification: false },
+    },
   };
   const generatorSignature = JSON.stringify(generatorPayload);
   const previewData = previewResult?.signature === generatorSignature ? previewResult.data : null;
@@ -436,7 +428,6 @@ export default function ExportPage() {
     ...(isHttpTransport && isWildcardHost && mcpServerAuthConfig.type === "none" ? ["Host is 0.0.0.0 and MCP server access auth is none. This can expose the MCP server to the network."] : []),
     ...(duplicateToolNames.length > 0 ? [`Duplicate tool names will be renamed during generation: ${[...new Set(duplicateToolNames)].join(", ")}.`] : []),
     ...(manualReviewEndpoints.length > 0 ? [`${manualReviewEndpoints.length} selected endpoint${manualReviewEndpoints.length === 1 ? "" : "s"} need manual review.`] : []),
-    ...(!exportFeatures.verification ? ["Post-generation verification is disabled (default). Enable only when using server-side generation on a host that allows process verify."] : []),
     ...(spec.baseUrl ? [] : ["No base URL was detected; generated code will use the configured fallback."]),
   ];
   const previewWarnings = [
@@ -491,8 +482,8 @@ export default function ExportPage() {
     try {
       if (browserMode) {
         // Privacy mode: run the pure generator + zip entirely in the browser.
-        // The spec never touches the network. Verification is server-only, so
-        // it is not run here (matches the note shown in the UI).
+        // The spec never touches the network. Process verification is a local
+        // CLI-only operation, so it is not run by either web generation path.
         const { blob, filename } = await generateProjectInBrowser(generatorPayload);
         triggerDownload(blob, filename);
       } else {
@@ -713,29 +704,6 @@ export default function ExportPage() {
                     checked={exportFeatures.tests}
                     onCheckedChange={(checked) => setExportConfig({ features: { tests: checked } })}
                   />
-                  <FeatureToggle
-                    label="Verification"
-                    description="Server-side process checks (tsc/install). Off by default; requires server mode and host opt-in."
-                    checked={exportFeatures.verification}
-                    onCheckedChange={(checked) => setExportConfig({ features: { verification: checked } })}
-                  />
-                  {exportFeatures.verification && (
-                    <div className="space-y-1.5 pl-10">
-                      <Label htmlFor="verification-mode" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Verification Mode</Label>
-                      <Select
-                        value={exportConfig.verificationMode || "fast"}
-                        onValueChange={(value) => setExportConfig({ verificationMode: value as "fast" | "full" })}
-                      >
-                        <SelectTrigger id="verification-mode" className="h-9 bg-background border-border text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="fast">Fast checks</SelectItem>
-                          <SelectItem value="full">Full install and build</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  )}
                 </div>
               </Section>
 
@@ -864,9 +832,6 @@ export default function ExportPage() {
                         <ShieldCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-primary" />
                         <p>
                           Generation and file preview run entirely on this device. The spec is never uploaded.
-                          {exportFeatures.verification && (
-                            <> Post-generation verification is server-only, so it is skipped in browser mode.</>
-                          )}
                         </p>
                       </>
                     ) : (
@@ -874,8 +839,8 @@ export default function ExportPage() {
                         <Cpu className="w-3.5 h-3.5 shrink-0 mt-0.5 text-muted-foreground/70" />
                         <p>
                           Server mode sends the spec to this app&rsquo;s server to build the zip or preview.
-                          Process verification only runs when the host enables it; full install-and-build
-                          verification also requires MCPMINT_ALLOW_FULL_VERIFY=1.
+                          The public server validates structure but never installs dependencies or starts
+                          generated processes.
                         </p>
                       </>
                     )}
@@ -910,16 +875,10 @@ export default function ExportPage() {
                     tone="success"
                   />
                   <StatusRow
-                    icon={previewData?.verification?.status === "failed" ? <XCircle className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-                    label="Verification result"
-                    value={
-                      previewData?.verification
-                        ? `${previewData.verification.status} · ${previewData.verification.mode}`
-                        : exportFeatures.verification
-                          ? "Not run yet"
-                          : "Disabled"
-                    }
-                    tone={previewData?.verification?.status === "failed" ? "danger" : previewData?.verification ? "success" : "muted"}
+                    icon={<CheckCircle2 className="w-4 h-4" />}
+                    label="Generation checks"
+                    value="Structure validated · full verification via CLI"
+                    tone="muted"
                   />
                 </div>
 
@@ -1027,29 +986,6 @@ export default function ExportPage() {
                           </Badge>
                         ))}
                       </div>
-                      {previewData.verification && (
-                        <div className="space-y-2">
-                          <div className={previewData.verification.status === "passed" ? "text-primary" : "text-red"}>
-                            Verification ({previewData.verification.mode}): {previewData.verification.status}
-                          </div>
-                          <div className="space-y-1">
-                            {previewData.verification.checks.map((check) => (
-                              <div key={check.name} className="flex items-center justify-between gap-4">
-                                <span>{check.name}</span>
-                                <span className={
-                                  check.status === "passed"
-                                    ? "text-primary"
-                                    : check.status === "failed"
-                                      ? "text-red"
-                                      : "text-muted-foreground"
-                                }>
-                                  {check.status}
-                                </span>
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      )}
                       {previewWarnings.length > 0 && (
                         <div className="space-y-1">
                           <div className="text-amber-500">Warnings</div>

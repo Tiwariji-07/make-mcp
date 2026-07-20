@@ -20,7 +20,7 @@ Generate MCP servers in your browser from OpenAPI and Postman specs. File/paste 
 - **Visual endpoint selection** — Choose which endpoints to expose as MCP tools.
 - **Tool configuration** — Edit tool names, descriptions, and parameter details, with import-time validation warnings and per-endpoint review badges surfaced in the editor.
 - 🪄 **Compact mode (meta-tools)** — For large APIs, emit just 3 meta-tools (`list_api_endpoints` / `get_api_endpoint_schema` / `invoke_api_endpoint`) instead of one tool per endpoint, keeping tool definitions from ballooning the model's context window. A live context-budget token meter shows the cost either way.
-- 🔒 **Client-side generation** — File/paste imports, generation, and zipping run entirely in your browser by default (via fflate). URL imports use a hardened server fetch, and a clearly labeled server-side generation path is available when you want full verification.
+- 🔒 **Client-side generation** — File/paste imports, generation, and zipping run entirely in your browser by default (via fflate). URL imports use a hardened server fetch; web generation never installs dependencies or starts generated processes.
 - **Multi-language export** — Generate Node.js (TypeScript) or Python (FastMCP) servers targeting MCP spec 2025-11-25.
 - **Ready-to-run code** — Download a complete, deployable MCP server as a zip, then copy paste-ready client configs from the success screen.
 - **Session persistence** — Your in-progress import, selection, and configuration survive a page refresh.
@@ -46,7 +46,7 @@ Open [http://localhost:3000](http://localhost:3000) in your browser.
 1. **Import** — Upload an OpenAPI/Swagger or Postman spec (JSON/YAML), paste it, or enter a URL (fetched server-side to bypass CORS). Try the built-in sample if you just want a look.
 2. **Select** — Choose which endpoints to convert into MCP tools. Watch the context-budget meter, or flip on **compact mode** so a large API collapses into 3 meta-tools.
 3. **Configure** — Edit tool names, descriptions, and parameters for better LLM understanding; review any validation warnings.
-4. **Export** — Generate a complete MCP server in Node.js or Python. Generation stays in your browser by default; opt into server-side generation for full verification. Then provide the extracted project&rsquo;s absolute path and copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI.
+4. **Export** — Generate a complete MCP server in Node.js or Python. Generation stays in your browser by default. Then provide the extracted project&rsquo;s absolute path and copy the client config for Claude Desktop, Cursor, or the `claude mcp add` CLI. Run `mcpmint generate ./api.yaml --verify full` locally when you need install/build/runtime verification.
 
 ## 🛠️ Tech Stack
 
@@ -128,14 +128,12 @@ Copy [`.env.example`](./.env.example) and set values in your host (e.g. Vercel):
 | Variable | Purpose | Public deploy |
 |----------|---------|---------------|
 | `NEXT_PUBLIC_SITE_URL` | Canonical site URL for SEO/metadata | Set to your domain |
-| `MCPMINT_ALLOW_PROCESS_VERIFY` | Allow process-spawning verify on `/api/generate` | **Leave unset** |
-| `MCPMINT_ALLOW_FULL_VERIFY` | Allow `verificationMode: full` | **Leave unset** |
 | `UPSTASH_REDIS_REST_URL` / `TOKEN` | Shared rate limits across isolates | Recommended |
 | `MCPMINT_RATE_LIMIT_MAX` | Requests per IP per minute (default 20) | Optional |
 
 Health check: `GET /api/health`.
 
-Default product path generates **and previews in the browser** so specs do not hit the server. Server-side generation remains available when privacy mode is off.
+Default product path generates **and previews in the browser** so specs do not hit the server. Server-side generation remains available when privacy mode is off, but both web paths perform only bounded structural validation. Full process verification is local CLI/CI-only.
 
 ## 🧭 Architecture
 

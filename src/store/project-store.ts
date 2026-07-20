@@ -442,8 +442,8 @@ const initialState = {
             documentation: true,
             docker: false,
             tests: true,
-            // Off by default: process-spawning verify is a server DoS risk and
-            // is stripped on the public API unless MCPMINT_ALLOW_PROCESS_VERIFY=1.
+            // Process-spawning verification is intentionally CLI-only. Web
+            // generation performs bounded structural validation instead.
             verification: false,
         },
     },

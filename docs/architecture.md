@@ -183,9 +183,10 @@ by default (`src/lib/client-generate.ts`): it imports only the pure pieces
 map with `fflate`, so the spec never leaves the page. The Node-only modules —
 `archive.ts` (`archiver`) and `verify.ts` (`node:fs` / `child_process`) — are
 deliberately excluded from that import graph so they never reach the client
-bundle. Server-side generation (`src/app/api/generate/route.ts`) exists for the
-one thing the browser cannot do: full verification (install + build/import + run
-generated tests).
+bundle. Server-side generation (`src/app/api/generate/route.ts`) offers an
+alternate in-memory archive path, but deliberately does not import or invoke the
+process-spawning verifier. Full verification runs only in a user-owned CLI or CI
+environment.
 
 ### 6. Verification
 
@@ -195,8 +196,9 @@ Verification should have two levels:
 - Full verification: install generated dependencies, build/import the generated
   app, and run generated behavior tests.
 
-Fast verification is suitable for interactive preview. Full verification should
-run in CI and can be offered as a stricter export option.
+Fast structural validation is suitable for interactive preview. Full
+verification runs through `mcpmint generate --verify full` or the generated
+project CI job, never through the public HTTP request path.
 
 ## Runtime Strategy
 
@@ -230,12 +232,7 @@ above is the real generation path, not just the target. Both the Node and Python
 targets consume the same `GenerationPlan` (built from the canonical model via the
 planner) rather than reading UI state directly.
 
-What is still pending:
-
-- The legacy UI-oriented config path still exists as a fallback and is slated for
-  removal. Until then, some inputs can still reach generation through the
-  simplified `ToolConfig` shape rather than the canonical model, and the two
-  paths should be reconciled onto the canonical model as the single source of
-  truth.
-- Full verification remains server-only and gated behind
-  `MCPMINT_ALLOW_FULL_VERIFY`; the browser path runs fast/shape validation only.
+The web UI now submits the canonical `ApiModel` as the sole source for schemas
+and operation metadata. Both public web paths force process verification off;
+the browser and server paths perform bounded plan/shape validation, while full
+verification remains available in the local CLI and CI.
