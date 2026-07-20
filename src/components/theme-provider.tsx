@@ -34,16 +34,17 @@ export function ThemeProvider({
 
     useEffect(() => {
         const root = window.document.documentElement;
-        root.classList.remove("dark", "light");
+        const media = window.matchMedia("(prefers-color-scheme: dark)");
+        const applyTheme = () => {
+            root.classList.remove("dark", "light");
+            root.classList.add(theme === "system" ? (media.matches ? "dark" : "light") : theme);
+        };
 
-        if (theme === "system") {
-            const systemTheme = window.matchMedia("(prefers-color-scheme: dark)").matches
-                ? "dark"
-                : "light";
-            root.classList.add(systemTheme);
-        } else {
-            root.classList.add(theme);
-        }
+        applyTheme();
+        if (theme !== "system") return;
+
+        media.addEventListener("change", applyTheme);
+        return () => media.removeEventListener("change", applyTheme);
     }, [theme]);
 
     const value = {

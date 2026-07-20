@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Download,
@@ -605,7 +605,7 @@ export default function ExportPage() {
 
           {/* ─── Left: Configuration ─── */}
           <div className="flex-1 overflow-y-auto border-r border-border">
-            <div className="max-w-2xl mx-auto px-8 py-10 space-y-0">
+            <div className="max-w-2xl mx-auto px-4 sm:px-8 py-8 sm:py-10 space-y-0">
 
               {/* Language Selection */}
               <Section title="Language">
@@ -652,13 +652,15 @@ export default function ExportPage() {
 
               {/* Server Details */}
               <Section title="Server">
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <Field label="Name" value={serverConfig.name} onChange={(v) => setServerConfig({ name: v })} />
                   <Field label="Version" value={serverConfig.version} onChange={(v) => setServerConfig({ version: v })} />
                   <Field label="Host" value={serverConfig.host} onChange={(v) => setServerConfig({ host: v })} />
                   <div className="space-y-1.5">
-                    <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Port</Label>
+                    <Label htmlFor="server-port" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Port</Label>
                     <Input
+                      id="server-port"
+                      inputMode="numeric"
                       value={portValue}
                       onChange={(e) => setPortValue(e.target.value)}
                       className="h-8 bg-background border-border text-xs focus:border-primary"
@@ -666,14 +668,14 @@ export default function ExportPage() {
                   </div>
                 </div>
                 <div className="mt-4">
-                  <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase mb-2 block">
+                  <Label htmlFor="server-transport" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase mb-2 block">
                     Transport
                   </Label>
                   <Select
                     value={serverConfig.transport}
                     onValueChange={(v) => setServerConfig({ transport: v as Transport })}
                   >
-                    <SelectTrigger className="h-8 bg-background border-border text-xs">
+                    <SelectTrigger id="server-transport" className="h-9 bg-background border-border text-xs">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -719,12 +721,12 @@ export default function ExportPage() {
                   />
                   {exportFeatures.verification && (
                     <div className="space-y-1.5 pl-10">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Verification Mode</Label>
+                      <Label htmlFor="verification-mode" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Verification Mode</Label>
                       <Select
                         value={exportConfig.verificationMode || "fast"}
                         onValueChange={(value) => setExportConfig({ verificationMode: value as "fast" | "full" })}
                       >
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                        <SelectTrigger id="verification-mode" className="h-9 bg-background border-border text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -739,8 +741,9 @@ export default function ExportPage() {
 
               {/* Upstream API Authentication */}
               <Section title="Upstream API Auth">
+                <Label htmlFor="upstream-auth-type" className="sr-only">Upstream authentication type</Label>
                 <Select value={authConfig.type} onValueChange={(v) => handleAuthTypeChange(v as AuthType)}>
-                  <SelectTrigger className="h-8 bg-background border-border text-xs">
+                  <SelectTrigger id="upstream-auth-type" className="h-9 bg-background border-border text-xs">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -759,12 +762,12 @@ export default function ExportPage() {
                       onChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: v, in: authConfig.apiKey?.in || "header" } })}
                     />
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Location</Label>
+                      <Label htmlFor="api-key-location" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Location</Label>
                       <Select
                         value={authConfig.apiKey?.in || "header"}
                         onValueChange={(v) => setAuthConfig({ type: "apiKey", apiKey: { name: authConfig.apiKey?.name || "X-API-Key", in: v as "header" | "query" | "cookie" } })}
                       >
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                        <SelectTrigger id="api-key-location" className="h-9 bg-background border-border text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -797,9 +800,9 @@ export default function ExportPage() {
                 ) : (
                   <div className="space-y-4">
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Server Auth</Label>
+                      <Label htmlFor="mcp-server-auth" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Server Auth</Label>
                       <Select value={mcpServerAuthConfig.type} onValueChange={(v) => handleMcpServerAuthTypeChange(v as McpServerAuthType)}>
-                        <SelectTrigger className="h-8 bg-background border-border text-xs">
+                        <SelectTrigger id="mcp-server-auth" className="h-9 bg-background border-border text-xs">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
@@ -810,8 +813,9 @@ export default function ExportPage() {
                     </div>
 
                     <div className="space-y-1.5">
-                      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Allowed Origins</Label>
+                      <Label htmlFor="allowed-origins" className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">Allowed Origins</Label>
                       <Input
+                        id="allowed-origins"
                         value={mcpServerAuthConfig.allowedOrigins.join(", ")}
                         onChange={(event) => handleAllowedOriginsChange(event.target.value)}
                         placeholder="https://client.example.com, http://localhost:3000"
@@ -1213,10 +1217,12 @@ function Field({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const id = useId();
   return (
     <div className="space-y-1.5">
-      <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">{label}</Label>
+      <Label htmlFor={id} className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">{label}</Label>
       <Input
+        id={id}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="h-8 bg-background border-border text-xs focus:border-primary"
@@ -1240,6 +1246,8 @@ function LangCard({
 }) {
   return (
     <button
+      type="button"
+      aria-pressed={selected}
       onClick={onClick}
       className={`
         p-5 border-2 text-left transition-all relative
@@ -1281,13 +1289,15 @@ function FeatureToggle({
   checked: boolean;
   onCheckedChange: (checked: boolean) => void;
 }) {
+  const id = useId();
+  const descriptionId = `${id}-description`;
   return (
     <div className="flex items-center justify-between gap-4 border border-border px-4 py-3">
       <div className="space-y-1">
-        <p className="text-sm font-medium">{label}</p>
-        <p className="text-[11px] text-muted-foreground">{description}</p>
+        <Label htmlFor={id} className="text-sm font-medium">{label}</Label>
+        <p id={descriptionId} className="text-[11px] text-muted-foreground">{description}</p>
       </div>
-      <Switch checked={checked} onCheckedChange={onCheckedChange} />
+      <Switch id={id} aria-describedby={descriptionId} checked={checked} onCheckedChange={onCheckedChange} />
     </div>
   );
 }

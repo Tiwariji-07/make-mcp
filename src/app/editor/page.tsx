@@ -32,7 +32,6 @@ export default function EditorPage() {
     spec,
     tools,
     toggleTool,
-    toggleAllTools,
     updateToolConfig,
     setCurrentStep,
     exportConfig,
@@ -87,12 +86,20 @@ export default function EditorPage() {
   });
 
   const selectedCount = tools.filter((t) => t.enabled).length;
-  const allSelected = tools.every((t) => t.enabled);
+  const visibleToolIds = new Set(filteredEndpoints.map((endpoint) => endpoint.id));
+  const visibleTools = tools.filter((tool) => visibleToolIds.has(tool.endpointId));
+  const allVisibleSelected = visibleTools.length > 0 && visibleTools.every((tool) => tool.enabled);
 
   const toggleMethodFilter = (m: string) =>
     setSelectedMethodFilters((prev) =>
       prev.includes(m) ? prev.filter((x) => x !== m) : [...prev, m]
     );
+
+  const toggleVisibleTools = (enabled: boolean) => {
+    for (const tool of visibleTools) {
+      if (tool.enabled !== enabled) toggleTool(tool.endpointId);
+    }
+  };
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -145,26 +152,28 @@ export default function EditorPage() {
 
         {/* Toolbar */}
         <div className="border-b border-border bg-surface sticky top-14 z-20">
-          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center gap-4 flex-wrap">
+          <div className="max-w-[1400px] mx-auto px-3 sm:px-6 py-3 flex items-center gap-3 sm:gap-4 flex-wrap">
             {/* Search */}
-            <div className="relative flex-1 min-w-[180px]">
+            <div className="relative flex-1 min-w-full sm:min-w-[180px]">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
               <Input
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search endpoints..."
-                className="pl-9 h-8 bg-background border-border text-xs focus:border-primary"
+                aria-label="Search endpoints"
+                className="pl-9 h-11 sm:h-8 bg-background border-border text-xs focus:border-primary"
               />
             </div>
 
             {/* Method filters */}
-            <div className="flex gap-1">
+            <div className="flex gap-1 overflow-x-auto max-w-full pb-1 sm:pb-0">
               {["GET", "POST", "PUT", "PATCH", "DELETE"].map((m) => (
                 <button
                   key={m}
                   onClick={() => toggleMethodFilter(m)}
+                  aria-pressed={selectedMethodFilters.includes(m)}
                   className={`
-                    px-2.5 py-1 text-[10px] font-semibold tracking-wider transition-all
+                    min-h-11 sm:min-h-0 px-2.5 py-1 text-[10px] font-semibold tracking-wider transition-all
                     ${selectedMethodFilters.includes(m)
                       ? getMethodClasses(m as ParsedEndpoint["method"])
                       : "text-muted-foreground hover:text-foreground bg-transparent border border-transparent hover:border-border"
@@ -178,18 +187,19 @@ export default function EditorPage() {
 
             {/* Select all */}
             <button
-              onClick={() => toggleAllTools(!allSelected)}
-              className="flex items-center gap-1.5 text-[11px] tracking-wider text-muted-foreground hover:text-primary transition-colors"
+              onClick={() => toggleVisibleTools(!allVisibleSelected)}
+              disabled={visibleTools.length === 0}
+              className="min-h-11 sm:min-h-0 px-2 flex items-center gap-1.5 text-[11px] tracking-wider text-muted-foreground hover:text-primary transition-colors disabled:opacity-50"
             >
-              {allSelected ? <Square className="w-3.5 h-3.5" /> : <CheckSquare className="w-3.5 h-3.5" />}
-              {allSelected ? "NONE" : "ALL"}
+              {allVisibleSelected ? <Square className="w-3.5 h-3.5" /> : <CheckSquare className="w-3.5 h-3.5" />}
+              {allVisibleSelected ? "NONE VISIBLE" : "ALL VISIBLE"}
             </button>
           </div>
         </div>
 
         {/* Table header */}
-        <div className="border-b border-border bg-surface/50">
-          <div className="max-w-[1400px] mx-auto px-6">
+        <div className="hidden md:block border-b border-border bg-surface/50">
+          <div className="max-w-[1400px] mx-auto px-3 sm:px-6">
             <div className="grid grid-cols-[40px_70px_1fr_180px_80px_40px] gap-4 py-2 text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
               <span></span>
               <span>Method</span>
@@ -203,31 +213,47 @@ export default function EditorPage() {
 
         {/* Endpoint rows */}
         <div className="flex-1 overflow-y-auto">
-          <div className="max-w-[1400px] mx-auto px-6">
+          <div className="max-w-[1400px] mx-auto px-3 sm:px-6">
             {filteredEndpoints.map((ep) => {
               const tool = tools.find((t) => t.endpointId === ep.id);
               if (!tool) return null;
               const isExpanded = expandedId === ep.id;
               const visibleParamCount = tool.parameters.filter((param) => !param.hidden).length;
               const warnings = endpointWarnings.get(`${ep.method} ${ep.path}`) ?? [];
+              const domId = ep.id.replace(/[^a-zA-Z0-9_-]+/g, "-");
 
               return (
                 <div key={ep.id} className="border-b border-border">
                   {/* Row */}
                   <div
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={isExpanded}
+                    aria-controls={`endpoint-details-${domId}`}
+                    aria-label={`${isExpanded ? "Collapse" : "Expand"} ${ep.method} ${ep.path}`}
                     className={`
-                      grid grid-cols-[40px_70px_1fr_180px_80px_40px] gap-4 py-3 items-center cursor-pointer transition-colors
+                      grid grid-cols-[44px_64px_minmax(0,1fr)_32px] md:grid-cols-[40px_70px_1fr_180px_80px_40px] gap-2 md:gap-4 py-3 items-center cursor-pointer transition-colors
                       ${tool.enabled ? "bg-primary/[0.03]" : "hover:bg-surface/50"}
                       ${isExpanded ? "bg-surface" : ""}
                     `}
                     onClick={() => setExpandedId(isExpanded ? null : ep.id)}
+                    onKeyDown={(event) => {
+                      if (event.currentTarget !== event.target) return;
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        setExpandedId(isExpanded ? null : ep.id);
+                      }
+                    }}
                   >
                     {/* Checkbox */}
-                    <div className="flex justify-center">
+                    <div className="min-h-11 flex items-center justify-center">
                       <Checkbox
                         checked={tool.enabled}
                         onCheckedChange={() => toggleTool(ep.id)}
                         onClick={(e) => e.stopPropagation()}
+                        onKeyDown={(e) => e.stopPropagation()}
+                        aria-label={`Include ${ep.method} ${ep.path}`}
+                        className="size-6"
                       />
                     </div>
 
@@ -243,13 +269,16 @@ export default function EditorPage() {
                         {warnings.length > 0 && (
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span
+                              <button
+                                type="button"
                                 onClick={(e) => e.stopPropagation()}
+                                onKeyDown={(e) => e.stopPropagation()}
+                                aria-label={`${warnings.length} validation warning${warnings.length === 1 ? "" : "s"} for ${ep.method} ${ep.path}`}
                                 className="shrink-0 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-sm bg-amber/10 border border-amber/40 text-amber text-[9px] font-semibold tracking-wider uppercase cursor-help"
                               >
                                 <AlertTriangle className="w-2.5 h-2.5" />
                                 {warnings.length}
-                              </span>
+                              </button>
                             </TooltipTrigger>
                             <TooltipContent className="max-w-xs text-left">
                               <ul className="space-y-1">
@@ -268,15 +297,18 @@ export default function EditorPage() {
                           {ep.summary}
                         </span>
                       )}
+                      <span className="md:hidden text-[10px] text-muted-foreground truncate block mt-1">
+                        {tool.toolName} · {visibleParamCount} param{visibleParamCount !== 1 ? "s" : ""}
+                      </span>
                     </div>
 
                     {/* Tool name */}
-                    <code className={`text-[11px] truncate ${tool.enabled ? "text-primary" : "text-muted-foreground"}`}>
+                    <code className={`hidden md:block text-[11px] truncate ${tool.enabled ? "text-primary" : "text-muted-foreground"}`}>
                       {tool.toolName}
                     </code>
 
                     {/* Params */}
-                    <span className="text-[11px] text-muted-foreground">
+                    <span className="hidden md:block text-[11px] text-muted-foreground">
                       {visibleParamCount} param{visibleParamCount !== 1 ? "s" : ""}
                     </span>
 
@@ -290,14 +322,15 @@ export default function EditorPage() {
 
                   {/* Inline expansion */}
                   {isExpanded && (
-                    <div className="animate-expand bg-surface border-t border-border px-6 py-5">
+                    <div id={`endpoint-details-${domId}`} className="animate-expand bg-surface border-t border-border px-3 sm:px-6 py-5">
                       <div className="grid md:grid-cols-2 gap-6 max-w-3xl">
                         {/* Tool Name */}
                         <div className="space-y-1.5">
-                          <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                          <Label htmlFor={`tool-name-${domId}`} className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
                             Tool Name
                           </Label>
                           <Input
+                            id={`tool-name-${domId}`}
                             value={tool.toolName}
                             onChange={(e) => updateToolConfig(ep.id, { toolName: e.target.value })}
                             className="h-8 bg-background border-border text-xs focus:border-primary"
@@ -306,7 +339,7 @@ export default function EditorPage() {
 
                         {/* Enable */}
                         <div className="space-y-1.5">
-                          <Label className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
+                          <Label htmlFor={`tool-description-${domId}`} className="text-[10px] tracking-[0.2em] text-muted-foreground uppercase">
                             Status
                           </Label>
                           <Button
@@ -325,6 +358,7 @@ export default function EditorPage() {
                             Description
                           </Label>
                           <Textarea
+                            id={`tool-description-${domId}`}
                             value={tool.description}
                             onChange={(e) => updateToolConfig(ep.id, { description: e.target.value })}
                             className="min-h-[60px] bg-background border-border text-xs resize-none focus:border-primary"
@@ -339,7 +373,7 @@ export default function EditorPage() {
                             </Label>
                             <div className="space-y-2 max-h-[250px] overflow-y-auto">
                               {tool.parameters.map((param, idx) => (
-                                <div key={`${param.originalName}-${idx}`} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                                <div key={`${param.originalName}-${idx}`} className="flex flex-wrap sm:flex-nowrap items-center gap-3 py-2 border-b border-border last:border-0">
                                   <Badge
                                     variant="outline"
                                     className={`text-[9px] w-12 justify-center ${getLocationClasses(param.location)}`}
@@ -347,6 +381,7 @@ export default function EditorPage() {
                                     {param.location}
                                   </Badge>
                                   <Input
+                                    aria-label={`Parameter name for ${param.originalName}`}
                                     value={param.name}
                                     onChange={(e) => {
                                       const newParams = [...tool.parameters];
@@ -354,13 +389,14 @@ export default function EditorPage() {
                                       updateToolConfig(ep.id, { parameters: newParams });
                                     }}
                                     disabled={param.hidden}
-                                    className="h-7 w-32 bg-background border-border text-[11px] focus:border-primary"
+                                    className="h-9 w-32 bg-background border-border text-[11px] focus:border-primary"
                                   />
                                   <span className="text-[10px] text-muted-foreground">{param.type}</span>
                                   {param.required && (
                                     <span className="text-[9px] text-amber tracking-wider uppercase">req</span>
                                   )}
                                   <Input
+                                    aria-label={`Description for parameter ${param.originalName}`}
                                     value={param.description}
                                     onChange={(e) => {
                                       const newParams = [...tool.parameters];
@@ -368,7 +404,7 @@ export default function EditorPage() {
                                       updateToolConfig(ep.id, { parameters: newParams });
                                     }}
                                     disabled={param.hidden}
-                                    className="h-7 flex-1 bg-background border-border text-[11px] focus:border-primary"
+                                    className="h-9 min-w-full sm:min-w-0 flex-1 bg-background border-border text-[11px] focus:border-primary"
                                     placeholder="Description..."
                                   />
                                   <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground whitespace-nowrap">
@@ -405,7 +441,7 @@ export default function EditorPage() {
 
         {/* Sticky bottom bar */}
         <div className="sticky bottom-0 border-t-2 border-primary bg-background z-20">
-          <div className="max-w-[1400px] mx-auto px-6 py-3 flex items-center justify-between">
+          <div className="max-w-[1400px] mx-auto px-3 sm:px-6 py-3 flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3">
             <Button
               variant="ghost"
               onClick={() => { setCurrentStep("import"); router.push("/import"); }}
@@ -415,12 +451,12 @@ export default function EditorPage() {
               Back
             </Button>
 
-            <div className="flex items-center gap-6">
+            <div className="flex flex-wrap items-center justify-end gap-2 sm:gap-6">
               {/* Compact mode toggle */}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <label
-                    className={`flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-pointer transition-colors ${
+                    className={`min-h-11 sm:min-h-0 flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-pointer transition-colors ${
                       compactMode
                         ? "border-primary/50 bg-primary/[0.08] text-primary"
                         : "border-border text-muted-foreground hover:text-foreground"
@@ -456,7 +492,7 @@ export default function EditorPage() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span
-                    className={`flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-help ${budgetClasses(budget.band)}`}
+                    className={`min-h-11 sm:min-h-0 flex items-center gap-2 px-2.5 py-1 rounded-sm border cursor-help ${budgetClasses(budget.band)}`}
                   >
                     <span
                       className={`w-1.5 h-1.5 rounded-full shrink-0 ${budgetDotClasses(budget.band)}`}
@@ -518,7 +554,7 @@ export default function EditorPage() {
               <Button
                 onClick={() => { setCurrentStep("export"); router.push("/export"); }}
                 disabled={selectedCount === 0}
-                className="bg-primary text-primary-foreground hover:bg-primary/90 px-8 font-semibold text-xs tracking-wider"
+                className="min-h-11 basis-full sm:basis-auto sm:flex-none bg-primary text-primary-foreground hover:bg-primary/90 px-8 font-semibold text-xs tracking-wider"
               >
                 Continue
                 <ArrowRight className="w-3.5 h-3.5 ml-2" />
