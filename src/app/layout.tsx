@@ -17,10 +17,10 @@ const firaCode = localFont({
 
 export const metadata: Metadata = {
   title: {
-    default: "mcpmint — Generate MCP Servers in Your Browser",
+    default: "mcpmint: Mint Your API for MCP",
     template: "%s | mcpmint",
   },
-  description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
+  description: "Turn OpenAPI and Postman specs into inspectable, trust-scanned MCP servers in your browser. Export TypeScript or Python with a lean context budget.",
   keywords: [
     "MCP",
     "Model Context Protocol",
@@ -43,15 +43,15 @@ export const metadata: Metadata = {
     locale: "en_US",
     url: SITE_URL,
     siteName: "mcpmint",
-    title: "mcpmint — Generate MCP Servers in Your Browser",
-    description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
+    title: "mcpmint: Mint Your API for MCP",
+    description: "Inspect every tool, trim context, run a trust scan, and export a deployable MCP server without sending your file anywhere.",
     // Social card image is generated dynamically via src/app/opengraph-image.tsx
     // (Next.js auto-wires the file-based convention).
   },
   twitter: {
     card: "summary_large_image",
-    title: "mcpmint — Generate MCP Servers in Your Browser",
-    description: "Generate MCP servers from OpenAPI and Postman specs with privacy-first browser generation and a token meter that keeps servers lean. Free and open source.",
+    title: "mcpmint: Mint Your API for MCP",
+    description: "Inspect every tool, trim context, run a trust scan, and export a deployable MCP server without sending your file anywhere.",
     // Twitter card image is generated dynamically via src/app/twitter-image.tsx.
   },
   robots: {
@@ -85,8 +85,7 @@ export default function RootLayout({
         />
       </head>
       <body
-        className={`${firaCode.variable} bg-mesh min-h-screen`}
-        style={{ fontFamily: "'Fira Code', monospace" }}
+        className={`${firaCode.variable} min-h-screen bg-mesh font-sans`}
       >
         {/* Legacy storage key kept intentionally so existing users' saved theme survives the mcpmint rebrand */}
         <ThemeProvider defaultTheme="dark" storageKey="makemcp-theme">

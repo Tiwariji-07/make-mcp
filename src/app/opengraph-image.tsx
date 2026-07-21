@@ -2,7 +2,7 @@ import { ImageResponse } from "next/og";
 
 // Image metadata
 export const alt =
-  "mcpmint — Privacy-first MCP server generation from OpenAPI and Postman specs.";
+  "mcpmint: Your API, minted for MCP.";
 export const size = {
   width: 1200,
   height: 630,
@@ -11,7 +11,7 @@ export const contentType = "image/png";
 
 // Brand
 const BG = "#0A0A0A";
-const ACID = "#C8F000";
+const ACID = "#E8FF47";
 const MUTED = "#8A8A8A";
 const MONO =
   "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace";
@@ -28,7 +28,7 @@ export default function OpengraphImage() {
           justifyContent: "space-between",
           backgroundColor: BG,
           backgroundImage:
-            "linear-gradient(rgba(200,240,0,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(200,240,0,0.06) 1px, transparent 1px)",
+            "linear-gradient(rgba(232,255,71,0.06) 1px, transparent 1px), linear-gradient(90deg, rgba(232,255,71,0.06) 1px, transparent 1px)",
           backgroundSize: "40px 40px",
           padding: "72px",
           fontFamily: MONO,
@@ -82,8 +82,8 @@ export default function OpengraphImage() {
               lineHeight: 1.3,
             }}
           >
-            Generate MCP servers from OpenAPI and Postman specs with
-            privacy-first browser generation.
+            Your API. Minted for MCP. Inspect every tool, trim context,
+            and export without sending your file anywhere.
           </div>
         </div>
 

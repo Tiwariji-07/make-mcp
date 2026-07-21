@@ -196,7 +196,7 @@ export default function EditorPage() {
                 <details className="text-[11px]">
                   <summary className="cursor-pointer uppercase tracking-wider text-primary">Review drift</summary>
                   <ul className="mt-2 max-h-40 min-w-[280px] space-y-1 overflow-auto border border-border bg-background p-3">
-                    {lastSpecDiff.changes.map((change) => <li key={`${change.kind}-${change.key}`}><span className="uppercase text-muted-foreground">{change.kind}</span> · {change.key} — {change.details.join("; ")}</li>)}
+                    {lastSpecDiff.changes.map((change) => <li key={`${change.kind}-${change.key}`}><span className="uppercase text-muted-foreground">{change.kind}</span> · {change.key}: {change.details.join("; ")}</li>)}
                   </ul>
                 </details>
               </div>
@@ -624,7 +624,7 @@ export default function EditorPage() {
                         }}
                         className="text-[10px] tracking-wide normal-case opacity-90 underline underline-offset-2 hover:opacity-100 hidden sm:inline"
                       >
-                        · Large tool set — try Compact mode
+                        · Large tool set, try Compact mode
                       </button>
                     ) : null}
                   </span>

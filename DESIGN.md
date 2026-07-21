@@ -20,7 +20,7 @@ typography:
     lineHeight: 0.95
     letterSpacing: "-0.03em"
   body:
-    fontFamily: "Fira Code, monospace"
+    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif"
     fontSize: "0.875rem"
     fontWeight: 400
     lineHeight: 1.6
@@ -97,20 +97,23 @@ The palette is restrained: near-black work surfaces, warm off-white text, and a 
 ## Typography
 
 **Display Font:** Clash Display (sans-serif fallback)
-**Body Font:** Fira Code (monospace fallback)
+**Body Font:** Native system sans (`-apple-system`, `BlinkMacSystemFont`, `Segoe UI`)
 **Label/Mono Font:** Fira Code
 
-**Character:** Clash Display gives the public entry surface a confident industrial voice. Fira Code makes paths, methods, findings, and generated output easy to scan without pretending every label is code.
+**Character:** Clash Display gives the public entry surface a confident industrial voice. The native sans keeps forms and explanatory prose effortless to read. Fira Code is reserved for paths, methods, compact state labels, findings, and generated output.
 
 ### Hierarchy
 
 - **Display** (700, 3rem or larger on the landing surface, 0.95): marketing headline only.
 - **Headline** (600, 1.5rem, 1.2): workflow page title and major result.
 - **Title** (600, 1rem, 1.35): section and endpoint title.
-- **Body** (400, 0.875rem, 1.6): instructions and explanations, capped at 72 characters when prose dominates.
+- **Body** (system sans, 400, 0.875rem, 1.6): instructions and explanations, capped at 72 characters when prose dominates.
 - **Label** (500, 0.6875rem, 0.15em letter spacing): short uppercase state and field categories.
+- **Technical data** (Fira Code, 400–600): paths, method badges, token counts, filenames, and code only.
 
 **The Work Before Voice Rule.** Display type never appears inside dense configuration, scanner, sandbox, or installation controls.
+
+**The Code Must Be Code Rule.** Monospace is not a general product voice. Prose, form controls, buttons, and section titles use the system sans; Fira Code appears only where fixed-width scanning adds meaning.
 
 ## Elevation
 
@@ -153,6 +156,10 @@ Use a persistent top workflow header with explicit progress semantics. Active st
 ### Evidence Rows
 
 Scanner findings, capability gaps, and diffs use a shared evidence row: severity icon and word, affected object, concise explanation, and an inline remediation or inspection action. Rows expand in place rather than opening a modal first.
+
+### Marketing Transformation Scene
+
+The homepage may use one lightweight CSS 3D scene to demonstrate an API specification becoming inspected MCP tools. Depth is explanatory, not decorative. It must render without WebGL, honor reduced motion, keep text alternatives, and collapse to a static compact composition on small screens. No 3D controls appear inside the product workflow.
 
 ## Do's and Don'ts
 

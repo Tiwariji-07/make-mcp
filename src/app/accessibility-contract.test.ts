@@ -49,6 +49,24 @@ test("endpoint rows and selection controls expose keyboard and accessible-name c
 
 test("icon-only GitHub navigation has an accessible name", () => {
     assert.match(read("../components/shared/header.tsx"), /aria-label="Open mcpmint on GitHub"/);
+    assert.match(read("../components/shared/marketing-header.tsx"), /aria-label="Open mcpmint on GitHub"/);
+});
+
+test("homepage content and transformation proof do not depend on hydration to become visible", () => {
+    const page = read("page.tsx");
+    const scene = read("../components/marketing/api-mint-scene.tsx");
+
+    assert.doesNotMatch(page, /mounted\s*\?\s*"opacity-100"/);
+    assert.match(page, /MarketingHeader/);
+    assert.match(scene, /aria-labelledby=/);
+    assert.match(scene, /Generated server summary/);
+});
+
+test("mobile export uses native progressive disclosure for advanced evidence", () => {
+    const exportPage = read("export/page.tsx");
+    assert.match(exportPage, /function ResponsiveDisclosure/);
+    assert.match(exportPage, /<details className="progressive-section/);
+    assert.match(exportPage, /focus-visible:outline-2/);
 });
 
 test("system theme responds to operating-system theme changes", () => {

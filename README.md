@@ -62,7 +62,7 @@ The CLI mirrors the safety workflow with `capabilities`, `scan`, and no-network-
 | Technology | Purpose |
 |------------|---------|
 | [Next.js 16](https://nextjs.org/) | React framework with App Router |
-| [Tailwind CSS v4](https://tailwindcss.com/) | Styling with custom glassmorphic theme |
+| [Tailwind CSS v4](https://tailwindcss.com/) | Refined brutalist design system with responsive product layouts |
 | [shadcn/ui](https://ui.shadcn.com/) | UI components |
 | [Zustand](https://zustand-demo.pmnd.rs/) | State management |
 | [swagger-parser](https://apitools.dev/swagger-parser/) | OpenAPI specification parsing |
